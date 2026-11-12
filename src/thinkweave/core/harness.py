@@ -40,6 +40,9 @@ SESSION_START_BUDGET_TOKENS = 10_000
 #: SubagentStart/SubagentStop are the dispatch seam: task boundaries are
 #: captured live at these edges, and a harness that lacks them degrades to
 #: task-id-only correlation (:attr:`HarnessProfile.task_correlation`).
+#: PreCompact is instrumentation (#353): one ``compact`` row in the session
+#: buffer marks where the harness compacted the context. A profile maps it
+#: only where a native pre-compaction event is known to exist.
 CANONICAL_EVENTS = (
     "SessionStart",
     "UserPromptSubmit",
@@ -47,6 +50,7 @@ CANONICAL_EVENTS = (
     "SubagentStart",
     "SubagentStop",
     "Stop",
+    "PreCompact",
 )
 
 _NUDGE = (
@@ -642,6 +646,8 @@ def claude_code(home: Path | None = None) -> HarnessProfile:
         # live interactive sessions on 2026-09-28 — single and parallel
         # dispatch, agent_id present and identical in both payloads) and
         # future re-verifications must be able to move independently.
+        # PreCompact is registered (hooks/hooks.json) but not yet observed
+        # firing on this machine, so it has no date here.
         fires_verified={
             "SessionStart": "2026-08-29",
             "UserPromptSubmit": "2026-08-29",
@@ -789,7 +795,9 @@ def codex(home: Path | None = None) -> HarnessProfile:
         eligibility="E3",
         detect_dir=cx,
         hook_mechanism="file",
-        hook_events={e: e for e in CANONICAL_EVENTS},
+        # PreCompact: no native pre-compaction hook observed on Codex yet;
+        # None until a capture dates one (the fires_verified rule).
+        hook_events={**{e: e for e in CANONICAL_EVENTS}, "PreCompact": None},
         # SessionStart/UserPromptSubmit: observed live on 2026-09-05 (two
         # interactive, authenticated codex-cli 0.146.0 sessions; first seen
         # in the 2026-08-02 credential-less spike). PostToolUse/Stop: raw
@@ -832,6 +840,14 @@ def codex(home: Path | None = None) -> HarnessProfile:
             "(docs/HARNESSES.md)"
         ),
         degradations=(
+            Degradation(
+                "PreCompact compaction row",
+                "documented",
+                "no pre-compaction hook has been observed firing on Codex, so "
+                "no `compact` row marks where it compacted; the mapping stays "
+                "None until a capture dates one",
+                "#353",
+            ),
             Degradation(
                 "Stop capture",
                 "documented",
@@ -984,6 +1000,9 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "SubagentStart": None,
             "SubagentStop": None,
             "Stop": "agent_end",
+            # Pi's `session_compact` fires after compaction (the shim re-arms
+            # SessionStart on it); no pre-compaction event is observed.
+            "PreCompact": None,
         },
         hook_budget_ms={"UserPromptSubmit": 6_000, "Stop": 6_000},
         context_channel="context-injection",
@@ -1021,6 +1040,14 @@ def pi(home: Path | None = None) -> HarnessProfile:
             "Stop": "2026-09-05",
         },
         degradations=(
+            Degradation(
+                "PreCompact compaction row",
+                "documented",
+                "Pi's `session_compact` fires after compaction (the shim "
+                "re-arms SessionStart on it) and no pre-compaction event is "
+                "observed, so no `compact` row marks where it compacted",
+                "#353",
+            ),
             Degradation(
                 "turn_end final message",
                 "documented",
@@ -1183,6 +1210,9 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             "SubagentStart": None,
             "SubagentStop": None,
             "Stop": "session.idle",
+            # `session.compacted` is a post-compaction bus event (the shim
+            # re-asks SessionStart on it); no pre-compaction hook is observed.
+            "PreCompact": None,
         },
         hook_budget_ms={
             "SessionStart": 5_000,
@@ -1222,6 +1252,14 @@ def opencode(home: Path | None = None) -> HarnessProfile:
             "Stop": "2026-10-12",
         },
         degradations=(
+            Degradation(
+                "PreCompact compaction row",
+                "documented",
+                "OpenCode's `session.compacted` is a post-compaction bus event "
+                "(the shim re-asks SessionStart on it) and no pre-compaction "
+                "hook is observed, so no `compact` row marks where it compacted",
+                "#353",
+            ),
             Degradation(
                 "turn_end final message",
                 "documented",

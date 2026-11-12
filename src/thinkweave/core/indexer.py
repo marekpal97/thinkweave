@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS prompt_concepts (
 
 CREATE INDEX IF NOT EXISTS idx_prc_concept ON prompt_concepts(concept);
 
--- System 1 verdicts projected from ``decision`` events: a session's archived
+-- System 1 verdicts projected from ``verdict`` events: a session's archived
 -- retrieval_log.jsonl (``session_id`` = the vault session note id, as in
 -- context_served) and the vault-level verdicts.jsonl (``session_id`` NULL).
 -- One row per answered question. ``phase`` is 'ex_ante' (judged before the
@@ -1559,7 +1559,7 @@ class Indexer:
                 except json.JSONDecodeError:
                     continue
                 etype = ev.get("type", "")
-                if etype == "decision":
+                if etype == "verdict":
                     self._insert_verdicts(ev, session_id)
                     continue
                 src = served_source(ev)
@@ -1590,7 +1590,7 @@ class Indexer:
         """Re-project the vault-level ``verdicts.jsonl`` into ``verdicts``.
 
         Replaces every session-less row, so it is idempotent. Returns the
-        number of decision events projected.
+        number of verdict events projected.
         """
         self.db.execute("DELETE FROM verdicts WHERE session_id IS NULL")
         path = verdicts_log_path(self.config.vault_root)
@@ -1602,14 +1602,14 @@ class Indexer:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(ev, dict) and ev.get("type") == "decision":
+            if isinstance(ev, dict) and ev.get("type") == "verdict":
                 self._insert_verdicts(ev, None)
                 projected += 1
         self.db.commit()
         return projected
 
     def _insert_verdicts(self, ev: dict, session_id: str | None) -> None:
-        """One ``verdicts`` row per answer in a ``decision`` event; an answer's
+        """One ``verdicts`` row per answer in a ``verdict`` event; an answer's
         own ``subject_id`` and ``action`` override the event's."""
         for answer in ev.get("answers") or []:
             self.db.execute(

@@ -43,6 +43,7 @@ profile is what runs; fix whichever is wrong.
 | SubagentStart | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | — (no verified equivalent) |
 | SubagentStop | ✓ 2026-09-28 | wired, unverified | — (no verified equivalent) | — (no verified equivalent) |
 | Stop | ✓ 2026-08-29 | ✓ 2026-09-07 | `agent_end` ✓ 2026-09-05 | `session.idle` ✓ 2026-10-12 |
+| PreCompact | wired, unverified | — (no verified equivalent) | — (no verified equivalent) | — (no verified equivalent) |
 
 ### Documented degradations
 
@@ -57,12 +58,14 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### Codex
 
+- **PreCompact compaction row** — documented: no pre-compaction hook has been observed firing on Codex, so no `compact` row marks where it compacted; the mapping stays None until a capture dates one (#353)
 - **Stop capture** — documented: fires at every turn end — measured interactively 2026-09-05 (hook/started at each task_complete) and headless 2026-09-07 (raw envelope with last_assistant_message; SessionEnd ~2 s later, which thinkweave does not hook). The first Stop materialises the note and later turns fold in place. Still unmeasured: whether an interactive TUI exit delivers a final Stop of its own beyond the last turn's, so a rich end-of-session capture in the TUI still rides `$thinkweave-wrap` (docs/HARNESSES.md §2026-09-07 instrumented headless run)
 - **SessionStart context delivery** — documented: additionalContext renders as a visible developer message, not a silent system one (openai/codex#16933)
 - **headless skill invocation** — documented: codex exec resolves no slash commands; a $name mention is a hint the model acts on by reading the skill file itself (docs/HARNESSES.md §Q2)
 
 #### Pi
 
+- **PreCompact compaction row** — documented: Pi's `session_compact` fires after compaction (the shim re-arms SessionStart on it) and no pre-compaction event is observed, so no `compact` row marks where it compacted (#353)
 - **turn_end final message** — documented: the shim's Stop envelope carries no final assistant message, so each turn_end records an empty message and the ex-post judge reads the turn's prompt and files touched only (shims/pi)
 - **hook latency** — documented: shim-core's 800 ms telemetry budget sits below this launcher's floor on the dev machine (a no-op Stop is ~1.8 s warm, ~6 s under load — WSL2, vault on /mnt/c), so the shim carries per-event budgets (UserPromptSubmit 6 s, Stop 6 s); a hook that still outlives its budget finishes as shim-core's documented orphan — capture is complete, Pi shows one 'hook timeout' notice per event per session, and only the prompt-time enrichment block that reply would have carried is lost (#114, docs/HARNESSES.md §Pi)
 - **MCP registration** — documented: Pi ≥ 1.0 ships a native MCP client that reads ~/.pi/agent/mcp.json directly and names tools `mcp__thinkweave__'weave_*`. `weave install --harness pi` writes the entry with `exposure: direct` so the model sees all 17 tools like built-ins (the `codemode` default hides them). Pre-1.0 Pi had no client — the community pi-mcp-adapter extension supplied one and REPLACED Pi's own client whenever it was installed; a leftover adapter package suppresses native MCP and is flagged by `weave doctor --mcp --harness pi` (docs/mcp.md §Control tool exposure)
@@ -73,6 +76,7 @@ row above) everything unlisted works as on Claude Code; on a
 
 #### OpenCode
 
+- **PreCompact compaction row** — documented: OpenCode's `session.compacted` is a post-compaction bus event (the shim re-asks SessionStart on it) and no pre-compaction hook is observed, so no `compact` row marks where it compacted (#353)
 - **turn_end final message** — documented: the shim's Stop envelope carries no final assistant message, so each turn_end records an empty message and the ex-post judge reads the turn's prompt and files touched only (shims/opencode)
 - **hook latency** — documented: the launcher's floor on the dev machine sits above shim-core's telemetry defaults, so the shim carries the Pi budgets (SessionStart 5 s, UserPromptSubmit 6 s, Stop 6 s) and a 10 s PostToolUse ceiling (fire-and-forget; at 800 ms a launcher started under load was reaped before python ran). Stop drains the turn's in-flight tool events first, and the plugin's dispose hook drains everything, because `opencode run` exits ~10 ms after the final idle without awaiting event handlers (#195, shims/opencode)
 - **headless stdin** — documented: `opencode run` reads a non-TTY stdin to EOF before it creates the session, so a dispatcher that leaves stdin open (a pipe, an agent tool's inherited stdin) hangs it forever with no output; dispatch with stdin from /dev/null (live 2026-10-12) (#195)

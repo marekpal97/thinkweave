@@ -1,4 +1,4 @@
-"""The ``verdicts`` table: a rebuildable projection of archived decision events."""
+"""The ``verdicts`` table: a rebuildable projection of archived verdict events."""
 
 from __future__ import annotations
 

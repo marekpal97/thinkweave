@@ -95,13 +95,13 @@ def test_the_prompt_gate_numbers_its_verdict_with_the_turn_stop_will_close(
     class _Hit:
         id, title, type, snippet = "n-cand0001", "Parser notes", "note", ""
 
-    cfg.decision_sites["prompt_gate"] = DecisionSite(enabled=True)
+    cfg.verdicts.site["prompt_gate"] = DecisionSite(enabled=True)
     monkeypatch.setattr(ptr, "_pool", lambda *a, **k: ptr.Pool([_Hit()], False))
     monkeypatch.setattr("thinkweave.operations.verdicts.build_from_vault",
                         lambda *a, **k: FakeDecisionProvider())
     ptr.build_enrichment(cfg, "h-1", "and now explain the parser to me")
 
-    gate = [e for e in ptr.Ledger.read(cfg, "h-1").events if e.get("type") == "decision"]
+    gate = [e for e in ptr.Ledger.read(cfg, "h-1").events if e.get("type") == "verdict"]
     assert [e["turn"] for e in gate] == [2]
 
 

@@ -33,7 +33,7 @@ import shutil
 from pathlib import Path
 
 # Event types that get routed to retrieval_log.jsonl rather than events.jsonl.
-_RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup", "decision"})
+_RETRIEVAL_LOG_TYPES = frozenset({"retrieval", "startup", "verdict"})
 
 #: Event type Stop writes to close a turn: its sequence, the final assistant
 #: message and the files touched. Part of the action stream (``events.jsonl``).
@@ -46,7 +46,7 @@ def buffer_path(weave_dir: Path, session_id: str) -> Path:
 
 
 def verdicts_log_path(vault_root: Path) -> Path:
-    """The vault-level log for decision events written outside any session."""
+    """The vault-level log for verdict events written outside any session."""
     return vault_root / "verdicts.jsonl"
 
 
@@ -230,7 +230,7 @@ def archive_buffer(weave_dir: Path, session_id: str, session_dir: Path) -> None:
     """Move the buffer file into the session folder, partitioning by type.
 
     Action/prompt events → ``events.jsonl``.
-    Retrieval, startup and decision events → ``retrieval_log.jsonl``.
+    Retrieval, startup and verdict events → ``retrieval_log.jsonl``.
 
     If no retrieval/startup events are present, the function degenerates to
     the pre-RLVR behaviour: a single ``events.jsonl`` is written and the

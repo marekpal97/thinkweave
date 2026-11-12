@@ -81,6 +81,18 @@
           }
         ]
       }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/weave-hook-launch\" pre_compact",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

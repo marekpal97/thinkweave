@@ -96,10 +96,10 @@ def test_systemone_backend_refuses_without_a_key(monkeypatch):
 
 def _rail(tmp_path: Path, smoke_toml: str | None) -> Path:
     rail = tmp_path / "rail"
-    (rail / "thinkweave" / "decisions").mkdir(parents=True)
+    (rail / "thinkweave" / "questions").mkdir(parents=True)
     (rail / "thinkweave" / "config.toml").write_text("", encoding="utf-8")
     if smoke_toml is not None:
-        (rail / "thinkweave" / "decisions" / "smoke.toml").write_text(
+        (rail / "thinkweave" / "questions" / "smoke.toml").write_text(
             smoke_toml, encoding="utf-8"
         )
     return rail
@@ -141,7 +141,7 @@ def test_rail_site_text_changes_the_state_the_backend_receives(tmp_path):
 def test_decision_site_table_is_a_rail_key(tmp_path, monkeypatch):
     rail = _rail(tmp_path, None)
     (rail / "thinkweave" / "config.toml").write_text(
-        "[decisions.prompt_gate]\n"
+        "[verdicts.prompt_gate]\n"
         "enabled = true\n"
         'backend = "openrouter"\n'
         'model = "typesafe/jev-1.14"\n'
@@ -159,5 +159,32 @@ def test_decision_site_table_is_a_rail_key(tmp_path, monkeypatch):
     assert (site.enabled, site.accept, site.pool_size) == (True, 0.7, 30)
     assert cfg.decision_site("other").enabled is False
 
-    with pytest.raises(ValueError, match="decisions.prompt_gate.thresh"):
-        _check_rail_keys({"decisions": {"prompt_gate": {"thresh": 1}}}, Path("x"))
+    with pytest.raises(ValueError, match="verdicts.prompt_gate.thresh"):
+        _check_rail_keys({"verdicts": {"prompt_gate": {"thresh": 1}}}, Path("x"))
+
+
+def test_an_unknown_decision_site_is_refused_by_name(tmp_path, monkeypatch):
+    """The site names are a closed set (``operations.verdicts.SITES``): a
+    table for any other name fails the load and the refusal lists the
+    known sites, in the rail file and in the vault file alike."""
+    from thinkweave.core.config import Config, _apply_knobs
+
+    with pytest.raises(ValueError, match=r"unknown key 'verdicts.promt_gate'"):
+        _check_rail_keys({"verdicts": {"promt_gate": {"enabled": True}}}, Path("x"))
+    with pytest.raises(
+        ValueError, match=r"unknown site 'promt_gate'.*prompt_gate, ex_post, smoke"
+    ):
+        _apply_knobs(Config(vault_root=tmp_path), {"verdicts": {"promt_gate": {"enabled": True}}})
+
+
+def test_the_rail_template_lists_every_decision_site():
+    """``weave policy inventory --toml`` renders one ``[verdicts.<site>]``
+    table per site from the knob metadata, so the rail file never names a
+    key the loader does not read."""
+    from thinkweave.core.config import iter_rail_addresses
+    from thinkweave.operations.verdicts import SITES
+
+    addresses = set(iter_rail_addresses())
+    for site in SITES:
+        assert (f"verdicts.{site}", "enabled") in addresses
+        assert (f"verdicts.{site}", "accept") in addresses

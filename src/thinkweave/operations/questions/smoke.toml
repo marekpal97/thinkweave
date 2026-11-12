@@ -1,5 +1,5 @@
 # Packaged default for the `smoke` decision site: one end-to-end call that
-# proves a backend answers. A rail copy at thinkweave/decisions/smoke.toml
+# proves a backend answers. A rail copy at thinkweave/questions/smoke.toml
 # replaces this file whole. Slots: {prompt}, {candidate}.
 state = """
 A user working with a personal knowledge vault sent this prompt:

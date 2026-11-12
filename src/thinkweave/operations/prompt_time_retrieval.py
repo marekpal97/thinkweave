@@ -14,11 +14,11 @@ to the prompt — *delta over startup* — to prepend to what the model sees.
   satisfies, so the keyword arm matches any of the prompt's words instead.
 
 - **Every gated candidate leaves an ex-ante verdict.** The call is recorded as
-  one ``decision`` event in the live buffer, one answer per candidate with its
+  one ``verdict`` event in the live buffer, one answer per candidate with its
   action (``served``, ``capped`` by the caps, or ``rejected``); the indexer
   projects it into ``verdicts``. On an error, a 429 or a missed deadline the
   gate writes nothing, the hook serves the RRF top ``max_pieces_per_turn``
-  and writes a ``decision_miss`` event.
+  and writes a ``verdict_miss`` event.
 
 - **Latency is bounded, not eliminated.** The embedding call runs in a daemon
   thread with a wall-clock deadline, and the decision call in another; on
@@ -27,7 +27,7 @@ to the prompt — *delta over startup* — to prepend to what the model sees.
 
 - **Misses are tracked, and adaptive-skip kicks in.** The handler records an
   embedding deadline miss as a ``prompt_time_miss`` event and a gate miss as
-  a ``decision_miss`` event. Once ``deadline_miss_limit`` consecutive misses
+  a ``verdict_miss`` event. Once ``deadline_miss_limit`` consecutive misses
   accumulate for a session, :func:`build_enrichment` stops attempting for the
   rest of that session rather than re-paying a doomed deadline every turn.
 
@@ -57,7 +57,7 @@ from typing import NamedTuple
 
 from thinkweave.core.config import Config
 from thinkweave.operations.verdicts import (
-    DECISION_MISS,
+    VERDICT_MISS,
     PROMPT_GATE,
     Ledger,
     ask_site,
@@ -81,21 +81,21 @@ _MIN_PIECE_CHARS = 80
 #: The least remaining harness budget worth starting the similarity arm
 #: with. Below it the arm is not attempted and the turn counts as a miss, so
 #: a harness whose hook budget is already spent still feeds the adaptive skip.
-_MIN_DEADLINE_SECONDS = 0.25
+MIN_DEADLINE_SECONDS = 0.25
 
 
 class Enrichment(NamedTuple):
     """One prompt's enrichment outcome, for the hook to emit and record.
 
     ``missed`` is ``True`` iff the similarity arm blew its deadline;
-    ``decision_miss`` names why the prompt gate gave no verdict, and then
+    ``verdict_miss`` names why the prompt gate gave no verdict, and then
     ``block`` holds the ungated RRF top.
     """
 
     block: str | None
     served_ids: list[str]
     missed: bool
-    decision_miss: str = ""
+    verdict_miss: str = ""
 
 
 _NOTHING = Enrichment(None, [], False)
@@ -123,7 +123,7 @@ def build_enrichment(
     similarity arm runs for the smaller of it and the configured
     ``embed_deadline_seconds``; the prompt gate gets the smaller of what is
     left and its ``deadline_ms``. A remaining budget under
-    ``_MIN_DEADLINE_SECONDS`` means nothing is attempted and the turn is a
+    ``MIN_DEADLINE_SECONDS`` means nothing is attempted and the turn is a
     miss; the configured deadline alone is never floored.
 
     With the ``prompt_gate`` decision site off, the cosine floor gates the
@@ -163,7 +163,7 @@ def build_enrichment(
 
     deadline_s = rpt.embed_deadline_seconds
     if deadline is not None:
-        if deadline < _MIN_DEADLINE_SECONDS:
+        if deadline < MIN_DEADLINE_SECONDS:
             return Enrichment(None, [], True)
         deadline_s = min(deadline, deadline_s)
 
@@ -212,7 +212,7 @@ def _site_gated(
     Serves the candidates the site accepts and records one ex-ante verdict
     per candidate. When the site gives no verdict by ``until`` (a
     ``time.monotonic`` instant) or its own deadline, serves the ungated RRF
-    top and names why in ``decision_miss``.
+    top and names why in ``verdict_miss``.
     """
     rpt = cfg.retrieval_prompt_time
     gate = cfg.decision_site(PROMPT_GATE)
@@ -235,7 +235,7 @@ def _site_gated(
         "task": task or "(none)",
     }
     try:
-        if budget < _MIN_DEADLINE_SECONDS:
+        if budget < MIN_DEADLINE_SECONDS:
             raise TimeoutError("the hook budget left no time for the gate")
         decision = ask_site(
             cfg, PROMPT_GATE, slots,
@@ -268,14 +268,14 @@ def _firings(ledger: Ledger) -> list[dict]:
 def _trailing_misses(ledger: Ledger) -> int:
     """Count R2's misses since its last successful firing (or session start).
 
-    Walks ``prompt_time_miss`` and ``decision_miss`` events and firings
+    Walks ``prompt_time_miss`` and ``verdict_miss`` events and firings
     (``tool == PROMPT_TIME_TOOL``) backwards from the end of the ledger.
     Plain ``prompt`` events do not interrupt the streak, and neither does a
     firing that served the ungated fallback after a decision miss.
     """
     n = 0
     for ev in reversed(ledger.events):
-        if ev.get("type") in (PROMPT_TIME_MISS, DECISION_MISS):
+        if ev.get("type") in (PROMPT_TIME_MISS, VERDICT_MISS):
             n += 1
         elif ev.get("tool") == PROMPT_TIME_TOOL and not ev.get("fallback"):
             break

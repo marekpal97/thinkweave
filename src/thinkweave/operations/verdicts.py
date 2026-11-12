@@ -2,7 +2,7 @@
 
 A site is a named question set: :func:`ask_site` renders a site's text and
 asks a decision provider, :func:`record_verdict` records the answer as a
-``decision`` event that the indexer projects into the ``verdicts`` table,
+``verdict`` event that the indexer projects into the ``verdicts`` table,
 :func:`run_site` does both, and :func:`record_miss` records a call that gave
 no verdict.
 
@@ -43,13 +43,20 @@ PHASES = ("ex_ante", "ex_post")
 
 #: Buffer event type for a site call that produced no verdict: an error, a
 #: 429 or a missed deadline.
-DECISION_MISS = "decision_miss"
+VERDICT_MISS = "verdict_miss"
 
 #: The decision site that gates the prompt-time pool.
 PROMPT_GATE = "prompt_gate"
 
 #: The decision site that judges, after the fact, whether work relied on a note.
 EX_POST = "ex_post"
+
+#: The decision site ``weave decide smoke`` asks: one end-to-end call.
+SMOKE = "smoke"
+
+#: Every decision site, each with a text under ``questions/``. The
+#: ``[verdicts.<site>]`` knob tables are keyed by these names.
+SITES = (PROMPT_GATE, EX_POST, SMOKE)
 
 #: Characters of the final assistant message a ``turn_end`` event keeps.
 FINAL_MESSAGE_CHARS = 2000
@@ -116,7 +123,7 @@ def record_verdict(
     source: str = "",
     log: Path | None = None,
 ) -> None:
-    """Write ``decision`` as one ``decision`` event.
+    """Write ``decision`` as one ``verdict`` event.
 
     The event goes to ``log`` when given; else, with ``session_id``, to that
     session's live buffer, which must exist; else to the vault's
@@ -126,7 +133,7 @@ def record_verdict(
     if phase not in PHASES:
         raise ValueError(f"phase must be one of {PHASES}, got {phase!r}")
     event = {
-        "type": "decision",
+        "type": "verdict",
         "ts": datetime.now(timezone.utc).isoformat(),
         "site": site,
         "turn": turn,
@@ -155,14 +162,14 @@ def record_miss(
     harness: str = "",
     delivery_id: str = "",
 ) -> bool:
-    """Write one ``decision_miss`` event for a ``site`` call that gave no verdict.
+    """Write one ``verdict_miss`` event for a ``site`` call that gave no verdict.
 
     The event goes where :func:`record_verdict` would put the verdict. With
     ``delivery_id`` a delivery already recorded for the session is skipped;
     returns whether the line was written.
     """
     event = {
-        "ts": datetime.now(timezone.utc).isoformat(), "type": DECISION_MISS,
+        "ts": datetime.now(timezone.utc).isoformat(), "type": VERDICT_MISS,
         "site": site, "source": source, "turn": turn, "reason": reason,
     }
     receipts = None
@@ -183,7 +190,7 @@ class SiteText:
 
     @classmethod
     def load(cls, cfg: Config, site: str) -> "SiteText":
-        """The rail's ``thinkweave/decisions/<site>.toml``, else the packaged default."""
+        """The rail's ``thinkweave/questions/<site>.toml``, else the packaged default."""
         path = _site_text_path(cfg, site)
         with open(path, "rb") as f:
             data = tomllib.load(f)
@@ -223,7 +230,7 @@ def ex_post_pass(
     """Ask every ex-post call ``ledger`` still owes and record each verdict in
     the session's folder, then re-project the session.
 
-    A call that fails is logged in the folder as a ``decision_miss`` and the
+    A call that fails is logged in the folder as a ``verdict_miss`` and the
     pass goes on. Does nothing while the ``ex_post`` site is off.
     """
     result = ExPostResult()
@@ -324,7 +331,7 @@ def readout(
             at(r["site"], r["source"] or "").calibrate(r["value"], used)
     for ledger in _session_ledgers(cfg, project, since):
         for ev in ledger.events:
-            if ev.get("type") == DECISION_MISS:
+            if ev.get("type") == VERDICT_MISS:
                 at(str(ev.get("site") or ""), str(ev.get("source") or "")).misses += 1
     return [sites[key].finish() for key in sorted(sites)]
 
@@ -358,7 +365,7 @@ class Turn:
             self.message = str(ev.get("message") or "")
             self.files = [str(f) for f in ev.get("files") or []]
             self.closed = True
-        elif kind == "decision" and ev.get("site") == PROMPT_GATE:
+        elif kind == "verdict" and ev.get("site") == PROMPT_GATE:
             for answer in ev.get("answers") or []:
                 self._offer(Item(
                     str(answer.get("subject_id") or ""), str(ev.get("source") or ""),
@@ -530,7 +537,7 @@ class Ledger:
             return []
         done = {
             (ev.get("turn"), ev.get("source")) for ev in self.events
-            if ev.get("type") == "decision" and ev.get("phase") == "ex_post"
+            if ev.get("type") == "verdict" and ev.get("phase") == "ex_post"
         }
         asks = [
             ExPostAsk(turn.seq, source, items, turn.work())
@@ -734,19 +741,19 @@ def _nearest_rank(values: list[int], q: float) -> int | None:
     return ordered[max(0, math.ceil(q * len(ordered)) - 1)] if ordered else None
 
 
-_PACKAGED_TEXTS = Path(__file__).parent / "decision_texts"
+_PACKAGED_TEXTS = Path(__file__).parent / "questions"
 
 
 def _site_text_path(cfg: Config, site: str) -> Path:
     if cfg.rsi_rail is not None:
-        rail = cfg.rsi_rail / "thinkweave" / "decisions" / f"{site}.toml"
+        rail = cfg.rsi_rail / "thinkweave" / "questions" / f"{site}.toml"
         if rail.exists():
             return rail
     packaged = _PACKAGED_TEXTS / f"{site}.toml"
     if not packaged.exists():
         raise FileNotFoundError(
             f"no text for decision site {site!r}: neither the rail's "
-            f"thinkweave/decisions/{site}.toml nor a packaged default exists"
+            f"thinkweave/questions/{site}.toml nor a packaged default exists"
         )
     return packaged
 

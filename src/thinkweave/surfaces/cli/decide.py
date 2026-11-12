@@ -35,7 +35,7 @@ def _sweep(cfg, args: argparse.Namespace) -> None:
     if not cfg.decision_site(EX_POST).enabled:
         print(
             "weave decide sweep: the ex_post decision site is off; turn it on "
-            "with [decisions.ex_post] enabled = true in the rail's thinkweave/config.toml",
+            "with [verdicts.ex_post] enabled = true in the rail's thinkweave/config.toml",
             file=sys.stderr,
         )
         sys.exit(1)

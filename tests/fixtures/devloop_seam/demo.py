@@ -7,7 +7,8 @@ Steps, each a subprocess of the shim or the ``weave`` CLI with this folder's
 ``trajectory`` (the shim adds ``--manifest-json``) → the trajectory note →
 ``weave task record-run``. It prints the observables: where the pack texts
 came from, the round's manifest (rail commit, funloops pin) and the stage
-log's ``skill`` key.
+log's ``skill`` key, and the two loop settings a rail's ``devloop/loop.toml``
+may set (``loop.max_fix_rounds``, ``prime.limit``; #334 demo criterion 7).
 
 Run it from the repo root with a throwaway vault::
 
@@ -115,6 +116,8 @@ def run_demo(vault: Path, env: dict | None = None, project: str = "demo-346") ->
     return {
         "policy_dir": env.get("DEVLOOP_POLICY_DIR") or _policy_dir_seen(config),
         "constitution": config["constitution"],
+        "loop_knobs": {"max_fix_rounds": config["loop"]["max_fix_rounds"],
+                       "prime.limit": config["prime"]["limit"]},
         "primed": prime.get("primed"),
         "pack": pack,
         "payload_manifest": payload.get("manifest"),
@@ -148,6 +151,8 @@ def main() -> int:
     print(f"standing orders    : "
           f"{'module constant' if devloop_pack.STANDING_ORDERS in seen['pack'] else 'policy dir file'}")
     print(f"standing-orders h2 : {_heading(seen['pack'], '## Standing orders')}")
+    print(f"max_fix_rounds     : {seen['loop_knobs']['max_fix_rounds']}")
+    print(f"prime.limit        : {seen['loop_knobs']['prime.limit']}")
     print(f"prime primed       : {seen['primed']}")
     print(f"trajectory note    : {seen['trajectory_note']}")
     print(f"task note          : {seen['task_note']}")

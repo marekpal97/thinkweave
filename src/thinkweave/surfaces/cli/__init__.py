@@ -35,6 +35,7 @@ from thinkweave.surfaces.cli.install import (
     cmd_install,
     cmd_uninstall,
 )
+from thinkweave.surfaces.cli.policy import cmd_policy
 from thinkweave.surfaces.cli.pause import cmd_pause, cmd_resume
 from thinkweave.surfaces.cli.intake import cmd_intake
 from thinkweave.surfaces.cli.judge import cmd_judge
@@ -138,6 +139,7 @@ _DISPATCH = {
     "rlvr": cmd_rlvr,
     "trajectory": cmd_trajectory,
     "steering": cmd_steering,
+    "policy": cmd_policy,
     "add": cmd_add,
     "update": cmd_update,
     "link": cmd_link,

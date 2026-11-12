@@ -74,6 +74,7 @@ weave task {open|close <id>|render <id>|ledger|record-run <payload.json>|feedbac
 weave rlvr export [--project] [--since] [--until] [--committed-only]  # JSONL stream of decision-context RLVR rows (decisions + loop trajectories)
 weave trajectory judge [--phase both|1|2] [--limit N] [--json]  # deterministic issue-loop trajectory outcome judge (phase-2 dream-outcome-worker rail)
 weave steering {evidence [--module PATH] | gate --proposals-json FILE} [--json]  # evidence-gated steering: per-module signals + drop-no-evidence/budget-cap gate the slow loop #61 calls
+weave policy inventory {--toml | --json | --check PATH}  # the knob inventory derived from the Config field metadata (read_at per field, dec-db6baaab): --toml renders the rsi-rail thinkweave/config.toml template (serving-chain knobs, commented at their defaults), --json lists every knob, --check exits 1 naming the first line where a file departs from the rendering (its live lines aside)
 weave update <note_id> [-f key=val ...]       # frontmatter / body-append for headless flows
 weave import {claude-code|codex|claude-history|file|chatgpt|messenger} [path] [--via {inline|batch}]
                                               # --enrich synthesises pending sessions imported by the named source only — no cross-harness draining
@@ -83,8 +84,8 @@ weave discover [--project X]                  # cross-project research gap analy
 weave show <id>                               # render a single note
 weave link <src_id> <tgt_id> [--type X]       # add typed edge
 weave install [--vault PATH] [--yes]          # register MCP server in ~/.claude.json
-weave dev-link                                # clone-dev flagless plugin loading via a ~/.claude/skills/ symlink (@skills-dir)
-weave dev-unlink                              # remove the dev-link symlink
+weave dev-link                                # clone-dev flagless plugin loading via a ~/.claude/skills/ symlink (@skills-dir); the single Claude Code route on a dev machine — rejects the checkout's .mcp.json (disabledMcpjsonServers) and removes bare-name .claude/commands links (#254)
+weave dev-unlink                              # remove the dev-link symlink and re-approve the checkout's .mcp.json
 weave mcp                                     # invoke the MCP server (used by ~/.claude.json)
 ```
 
@@ -153,6 +154,7 @@ Full inventory — 54 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | RLVR substrate export | `weave rlvr` | — | admin-cron |
 | Loop trajectory outcome judge | `weave trajectory` | — | admin-cron (dream-outcome-worker rail) |
 | Evidence-gated steering gate | `weave steering` | — | admin-cron (slow-loop #61 proposal gate) |
+| Knob inventory (rail template) | `weave policy` | — | admin-cron (regenerates and checks the rsi-rail template) |
 
 ## Environment
 
@@ -162,4 +164,6 @@ Full inventory — 54 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 - `THINKWEAVE_RSI_RAIL` — path to the user's `rsi-rail` policy repo. Its `thinkweave/config.toml` merges over `vault/config/config.toml` (repo wins on a shared key; the vault fills the rest; `vault_root` is never read from it). Same knob is settable as the `rsi_rail` key in the user-scope `~/.config/thinkweave/config.toml`; this env var wins when both are set. Unset means no change. See the `rsi-rail` tier under "User configuration layout" in [ARCHITECTURE.md](../ARCHITECTURE.md).
 - `OPENAI_API_KEY` — required by embeddings (`weave index --embed`), the ChatGPT importer, and the hub batch backfill (`weave hubs link --via batch`).
 
-For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra all`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+For a dev-link upgrade, close every Claude Code session, run `git pull`, `uv sync --extra all` and `uv run weave dev-link`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+
+On a dev-link machine the plugin is the **only** Claude Code route (#254): its tools are `mcp__plugin_thinkweave_thinkweave__weave_*` and its commands `/thinkweave:*`. `weave dev-link` rejects the committed `.mcp.json` for the checkout (`disabledMcpjsonServers` in `.claude/settings.local.json`, machine-local) and removes bare-name `.claude/commands/<name>.md → ../../commands/<name>.md` links; `weave dev-unlink` re-approves the file. `.mcp.json` itself stays committed for Pi (native), Codex (trusted project) and as the launch reference. `weave doctor --mcp` fails `registration scopes` when a plugin manifest and a bare-name scope both register the server, and `skill routes` when bare-name links or a top-level `skills/` sit beside the plugin.

@@ -4,7 +4,7 @@ This file loads into your context every session. It is the lean operating surfac
 
 ## What Thinkweave is
 
-Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, SQLite is a derived index. As an agent you do **not** crawl the vault filesystem — you query through the `weave_*` MCP tools (server id `thinkweave`, so tools are `mcp__thinkweave__weave_*`; the short names stay `weave_*`) or the `weave` CLI. Sessions, decisions, sources, themes, and concept hubs are all first-class notes connected by a shared concept ontology. Retrieve through the retrieval cheatsheet below; preserve session knowledge via `/wrap` before clearing context.
+Thinkweave is an Obsidian-native memory layer: markdown is the source of truth, SQLite is a derived index. As an agent you do **not** crawl the vault filesystem — you query through the `weave_*` MCP tools (on the plugin route — marketplace or `weave dev-link` — the full names are `mcp__plugin_thinkweave_thinkweave__weave_*`; a project-scope clone exposes `mcp__thinkweave__weave_*`; the short names stay `weave_*`) or the `weave` CLI. Sessions, decisions, sources, themes, and concept hubs are all first-class notes connected by a shared concept ontology. Retrieve through the retrieval cheatsheet below; preserve session knowledge via `/wrap` before clearing context.
 
 ## Retrieval cheatsheet
 
@@ -55,7 +55,9 @@ When you need depth, go here. CLAUDE.md tells you *how to operate*; these tell y
 | [docs/CLI-AND-MCP.md](docs/CLI-AND-MCP.md) | The `weave` CLI subcommand reference, the 17 MCP tools, the CLI↔MCP surface contract (which audience owns each operation), and the environment variables. |
 | [docs/SCHEMA.md](docs/SCHEMA.md) | Every SQL table the derived index produces — name, purpose, key columns, `CREATE` site — and the rebuild/migration story. Markdown stays truth; SQLite is rebuildable. |
 
-For a dev-link upgrade, close every Claude Code session, run `git pull` and `uv sync --extra all`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+For a dev-link upgrade, close every Claude Code session, run `git pull`, `uv sync --extra all` and `uv run weave dev-link`, then reopen. Runtime MCP/hook launchers use `--no-sync` by design. Only the alternative machine-scope hook route also needs `uv run weave hooks install --scope user`.
+
+Dev-link is the **single** Claude Code route on a dev machine (#254). The plugin manifest provides the MCP server, hooks, agents and `/thinkweave:*` commands; `weave dev-link` (idempotent) rejects the committed `.mcp.json` for this checkout via `disabledMcpjsonServers` in `.claude/settings.local.json` and removes bare-name `.claude/commands/` links into `commands/`, so each skill and each tool registers once. `.mcp.json` stays committed: Pi reads it natively, Codex with trust, and it is the launch reference other agents copy. `weave doctor --mcp` fails its `registration scopes` and `skill routes` rows when a second route is present.
 
 ### The `/issue-loop` dev loop lives in another repo
 

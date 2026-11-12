@@ -1,6 +1,6 @@
 # Packaged default for the `prompt_gate` decision site: before a coding agent
 # reads the user's prompt, decide which vault notes are worth showing it. A
-# rail copy at thinkweave/decisions/prompt_gate.toml replaces this file whole.
+# rail copy at thinkweave/questions/prompt_gate.toml replaces this file whole.
 # Slots: {prompt}, {previous_prompt}, {task}; per candidate, {candidate}.
 state = """
 A user works with a coding agent that can read notes from the user's personal

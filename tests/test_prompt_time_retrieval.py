@@ -365,7 +365,7 @@ def test_a_spent_budget_is_a_miss_without_starting_the_arm(tmp_path: Path, monke
 def _gate_on(cfg: Config, monkeypatch, provider) -> None:
     from thinkweave.core.config import DecisionSite
 
-    cfg.decision_sites["prompt_gate"] = DecisionSite(enabled=True)
+    cfg.verdicts.site["prompt_gate"] = DecisionSite(enabled=True)
     monkeypatch.setattr(
         "thinkweave.operations.verdicts.build_from_vault", lambda *a, **k: provider
     )
@@ -376,7 +376,7 @@ def _start_turn(cfg: Config, session_id: str, prompt: str) -> None:
 
 
 def _decision_events(cfg: Config, session_id: str) -> list[dict]:
-    return [e for e in ptr.Ledger.read(cfg, session_id).events if e.get("type") == "decision"]
+    return [e for e in ptr.Ledger.read(cfg, session_id).events if e.get("type") == "verdict"]
 
 
 class _RaisingEmbedder:
@@ -420,7 +420,7 @@ def test_a_raising_embedder_leaves_bm25_candidates_for_the_gate(vault_factory, m
     scored = [q.subject for q in fake.calls[0][1]]
     assert sourdough in scored
     assert result.served_ids == [sourdough]
-    assert result.decision_miss == ""
+    assert result.verdict_miss == ""
 
 
 def _note_id(cfg: Config, title: str) -> str:
@@ -430,7 +430,7 @@ def _note_id(cfg: Config, title: str) -> str:
         return db.execute("SELECT id FROM notes WHERE title = ?", (title,)).fetchone()[0]
 
 
-def test_a_raising_backend_writes_a_decision_miss_and_serves_the_rrf_top(tmp_path: Path, monkeypatch):
+def test_a_raising_backend_writes_a_verdict_miss_and_serves_the_rrf_top(tmp_path: Path, monkeypatch):
     from thinkweave.core.decision_provider import FakeDecisionProvider
     from thinkweave.surfaces.hooks import handler as handler_mod
 
@@ -446,7 +446,7 @@ def test_a_raising_backend_writes_a_decision_miss_and_serves_the_rrf_top(tmp_pat
     )
 
     events = ptr.Ledger.read(cfg, "ses-miss").events
-    misses = [e for e in events if e.get("type") == "decision_miss"]
+    misses = [e for e in events if e.get("type") == "verdict_miss"]
     assert len(misses) == 1
     assert misses[0]["site"] == "prompt_gate"
     assert "429" in misses[0]["reason"]

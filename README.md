@@ -213,7 +213,12 @@ workers, no separate `weave install`. Live-edit reload: `commands/*.md` and vaul
 config are picked up immediately; `hooks/`, `agents/`, or `mcpServers` changes need
 `/reload-plugins`. `weave dev-link` is idempotent, refuses to shadow a marketplace
 install, warns if a leftover `weave install` entry would double-register the server,
-and is reversed by `weave dev-unlink`.
+and is reversed by `weave dev-unlink`. It also makes the plugin the **only** route
+on this machine: the committed `.mcp.json` is rejected for this checkout (via
+`disabledMcpjsonServers` in `.claude/settings.local.json`, machine-local) and
+bare-name `.claude/commands/` links are removed, so each skill and each MCP tool
+registers once. The plugin's tools are `mcp__plugin_thinkweave_thinkweave__weave_*`;
+`weave doctor --mcp` fails when a second route is present.
 
 **Updating a dev-link checkout (especially on Windows):** close every Claude Code
 session, then run `git pull` and `uv sync --extra all`, and reopen Claude Code.

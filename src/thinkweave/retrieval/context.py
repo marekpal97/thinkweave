@@ -92,7 +92,69 @@ def session_start_budget_tokens(cap_chars: int | None) -> int:
 # (header/tasks/sessions/decisions carry the continuation cue; the snapshot
 # route also treats state/tools/footer as load-bearing) never drop whole:
 # ``_assemble`` cuts their tail instead.
-_DROP_ORDER = ("sources", "themes", "concepts", "probes", "backlog")
+DROP_ORDER = ("sources", "themes", "concepts", "probes", "backlog")
+
+# Each section builder's soft budget in characters: the size its body aims
+# for when it has content. The reference value a ``[context.startup.<id>]
+# cap`` overrides, so the inventory can show it without building a section.
+SECTION_SOFT_BUDGET_CHARS = {
+    "header": 600,
+    "tools": 3200,
+    "sessions": 9000,
+    "tasks": 1600,
+    "state": 12000,
+    "backlog": 3200,
+    "decisions": 4800,
+    "probes": 1600,
+    "themes": 1200,
+    "concepts": 1200,
+    "sources": 1600,
+    "footer": 1400,
+}
+
+
+@dataclass(frozen=True)
+class ServingPlan:
+    """The payload shape in force: ``[context.startup]`` over this module's
+    defaults (#352). One plan feeds every serving surface — the SessionStart
+    hook, ``weave_project_snapshot`` and ``weave project`` — so one knob
+    changes each of them.
+
+    ``sections`` and ``budget_chars`` stay ``None`` when unset, because their
+    default differs by surface: SessionStart serves ``SESSION_START_SECTIONS``
+    inside the harness cap, the snapshot serves every section inside the
+    caller's token budget.
+    """
+
+    sections: tuple[str, ...] | None
+    budget_chars: int | None
+    drop_order: tuple[str, ...]
+    pins: frozenset[str]
+    caps: dict[str, int]
+
+    def startup_sections(self) -> list[str]:
+        return list(self.sections or SESSION_START_SECTIONS)
+
+    def startup_budget_chars(self, cap_chars: int | None) -> int:
+        """Chars SessionStart may spend: the configured budget, else the
+        harness cap less the guard reserve (see session_start_budget_tokens)."""
+        if self.budget_chars is not None:
+            return self.budget_chars
+        return session_start_budget_tokens(cap_chars) * CHARS_PER_TOKEN
+
+
+def serving_plan(cfg: Config) -> ServingPlan:
+    """Resolve ``cfg.context_startup`` against this module's defaults."""
+    startup = cfg.context_startup
+    return ServingPlan(
+        sections=tuple(startup.sections) if startup.sections else None,
+        budget_chars=startup.budget_chars,
+        drop_order=(
+            tuple(startup.drop_order) if startup.drop_order is not None else DROP_ORDER
+        ),
+        pins=frozenset(k for k, s in startup.section.items() if s.pin),
+        caps={k: s.cap for k, s in startup.section.items() if s.cap is not None},
+    )
 
 
 @dataclass
@@ -128,9 +190,13 @@ def build_project_context(
     Args:
         cfg: Optional pre-loaded Config. If None, loads from env/config.toml.
         project: Project slug. If empty, uses cfg.default_project.
-        sections: Optional subset of SECTIONS to include. Default: all.
+        sections: Optional subset of SECTIONS to include. Default: the
+            configured ``context.startup.sections``, else all.
         budget_tokens: Soft cap on the total payload size in tokens.
         omit_empty: Drop placeholder sections that have nothing to report.
+
+    Explicit arguments win over config; the per-section ``pin``/``cap`` and
+    the drop order always come from :func:`serving_plan`.
 
     Returns:
         A markdown string with ``## Heading`` sections. If the vault is
@@ -141,7 +207,8 @@ def build_project_context(
     cfg = cfg or load_config()
     project = normalize_project_name(project or cfg.default_project or "")
 
-    wanted = list(sections) if sections else list(SECTIONS)
+    plan = serving_plan(cfg)
+    wanted = list(sections or plan.sections or SECTIONS)
 
     # Build each requested section. Errors in one section become a visible
     # ``_(section failed: <reason>)_`` line so partial failures are loud
@@ -158,10 +225,15 @@ def build_project_context(
                 soft_budget_chars=200,
             )
         if section is not None and not (omit_empty and section.empty):
+            cap = plan.caps.get(key)
+            if cap is not None and len(section.body) > cap:
+                section.body = _cut(section.body, cap)
             collected[key] = section
 
     max_chars = budget_tokens * CHARS_PER_TOKEN
-    return _assemble(collected, wanted, max_chars)
+    return _assemble(
+        collected, wanted, max_chars, drop_order=plan.drop_order, pins=plan.pins
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +251,9 @@ def _build_section(key: str, cfg: Config, project: str) -> Section | None:
     if key == "tasks":
         return _build_open_tasks(cfg, project)
     if key == "state":
-        return _build_state_excerpt(cfg, project, max_chars=12000)
+        return _build_state_excerpt(
+            cfg, project, max_chars=SECTION_SOFT_BUDGET_CHARS["state"]
+        )
     if key == "backlog":
         return _build_backlog(cfg, project)
     if key == "decisions":
@@ -240,7 +314,7 @@ def _build_header(cfg: Config, project: str) -> Section:
         key="header",
         title=_default_title("header"),
         body="\n".join(lines),
-        soft_budget_chars=600,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["header"],
     )
 
 
@@ -304,7 +378,7 @@ def _build_tools_manifest() -> Section:
         key="tools",
         title=_default_title("tools"),
         body=body,
-        soft_budget_chars=3200,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["tools"],
     )
 
 
@@ -399,7 +473,7 @@ def _build_recent_sessions(cfg: Config, project: str, n: int = 5) -> Section:
         key="sessions",
         title=_default_title("sessions"),
         body="\n\n".join(chunks),
-        soft_budget_chars=9000,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["sessions"],
     )
 
 
@@ -471,7 +545,7 @@ def _build_open_tasks(cfg: Config, project: str, n: int = 20) -> Section | None:
         key="tasks",
         title=_default_title("tasks"),
         body="\n".join(OPEN_TASK_RULES) + "\n\n" + "\n".join(lines),
-        soft_budget_chars=1600,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["tasks"],
     )
 
 
@@ -583,7 +657,7 @@ def _build_backlog(cfg: Config, project: str) -> Section:
         key="backlog",
         title=_default_title("backlog"),
         body=open_section,
-        soft_budget_chars=3200,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["backlog"],
     )
 
 
@@ -644,7 +718,7 @@ def _build_recent_decisions(cfg: Config, project: str, n: int = 10) -> Section:
         key="decisions",
         title=_default_title("decisions"),
         body="\n".join(lines),
-        soft_budget_chars=4800,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["decisions"],
     )
 
 
@@ -707,7 +781,7 @@ def _build_open_probes(cfg: Config, project: str, n: int = 20) -> Section:
         key="probes",
         title=_default_title("probes"),
         body="\n".join(lines),
-        soft_budget_chars=1600,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["probes"],
     )
 
 
@@ -755,7 +829,7 @@ def _build_concept_histogram(cfg: Config, project: str, n: int = 20) -> Section:
         key="concepts",
         title=_default_title("concepts"),
         body=", ".join(pieces),
-        soft_budget_chars=1200,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["concepts"],
     )
 
 
@@ -812,7 +886,7 @@ def _build_recent_sources(cfg: Config, project: str, n: int = 5) -> Section:
         key="sources",
         title=_default_title("sources"),
         body="\n".join(lines),
-        soft_budget_chars=1600,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["sources"],
     )
 
 
@@ -848,7 +922,7 @@ def _build_footer() -> Section:
         key="footer",
         title=_default_title("footer"),
         body=body,
-        soft_budget_chars=1400,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["footer"],
     )
 
 
@@ -935,7 +1009,7 @@ def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
         key="themes",
         title=_default_title("themes"),
         body=body,
-        soft_budget_chars=1200,
+        soft_budget_chars=SECTION_SOFT_BUDGET_CHARS["themes"],
     )
 
 
@@ -944,22 +1018,31 @@ def _build_active_themes(cfg: Config, project: str, n: int = 10) -> Section:
 # ---------------------------------------------------------------------------
 
 
-def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) -> str:
+def _assemble(
+    collected: dict[str, Section],
+    wanted: list[str],
+    max_chars: int,
+    *,
+    drop_order: tuple[str, ...] = DROP_ORDER,
+    pins: frozenset[str] = frozenset(),
+) -> str:
     """Render sections in the requested order, inside ``max_chars``.
 
-    Ranked sections (``_DROP_ORDER``) drop whole, cheapest first, until the
+    Ranked sections (``drop_order``) drop whole, cheapest first, until the
     payload fits; then each dropped one comes back, most valuable first, if it
     fits the room left. The other sections never drop: when they alone
-    overflow, the largest is cut to fit, its head kept.
+    overflow, the largest is cut to fit, its head kept. A pinned section is
+    neither dropped nor cut; when the pinned sections alone overflow, the
+    payload is capped as a whole, because the harness cap is a hard limit.
     """
     ordered = [collected[k] for k in wanted if k in collected]
     kept = {s.key: s for s in ordered}
 
     dropped: list[Section] = []
-    for key in _DROP_ORDER:
+    for key in drop_order:
         if len(_render_kept(ordered, kept)) <= max_chars:
             break
-        if key in kept:
+        if key in kept and key not in pins:
             dropped.append(kept.pop(key))
     for s in reversed(dropped):
         kept[s.key] = s
@@ -968,17 +1051,27 @@ def _assemble(collected: dict[str, Section], wanted: list[str], max_chars: int) 
 
     rendered = _render_kept(ordered, kept)
     while len(rendered) > max_chars:
-        largest = max(kept.values(), key=lambda s: len(s.body))
-        keep = len(largest.body) - (len(rendered) - max_chars) - len(_CUT_MARK)
+        cuttable = [s for s in kept.values() if s.key not in pins]
+        largest = max(cuttable, key=lambda s: len(s.body), default=None)
+        keep = (
+            len(largest.body) - (len(rendered) - max_chars) - len(_CUT_MARK)
+            if largest is not None
+            else 0
+        )
         if keep <= 0:
             return rendered[: max_chars - len(_CAP_MARK)] + _CAP_MARK
-        largest.body = largest.body[:keep].rsplit("\n", 1)[0] + _CUT_MARK
+        largest.body = _cut(largest.body, keep + len(_CUT_MARK))
         rendered = _render_kept(ordered, kept)
     return rendered
 
 
 _CUT_MARK = "\n\n_... (truncated to fit budget)_"
 _CAP_MARK = "\n\n_... (payload capped)_"
+
+
+def _cut(body: str, limit: int) -> str:
+    """``body`` cut to at most ``limit`` chars at a line end, the cut marked."""
+    return body[: max(limit - len(_CUT_MARK), 0)].rsplit("\n", 1)[0] + _CUT_MARK
 
 
 def _render_kept(ordered: list[Section], kept: dict[str, Section]) -> str:

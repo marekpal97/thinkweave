@@ -17,7 +17,7 @@ from tests.conftest import write_session_md
 
 def _gate(ts: str, *answers: tuple[str, float, str]) -> dict:
     return {
-        "ts": ts, "type": "decision", "site": "prompt_gate", "turn": 1,
+        "ts": ts, "type": "verdict", "site": "prompt_gate", "turn": 1,
         "subject_id": "", "phase": "ex_ante", "action": "none",
         "source": "prompttime", "model": "fake", "backend": "fake",
         "latency_ms": 40, "cost": 0.001,
@@ -57,7 +57,7 @@ def replayed(vault_factory, monkeypatch):
     """A session ``ses-ex`` (harness ``h-1``) whose live buffer replays ``_REPLAY``,
     with the ex-post site on and a fake backend behind it."""
     cfg = vault_factory(indexed=True).config
-    cfg.decision_sites["ex_post"] = DecisionSite(enabled=True)
+    cfg.verdicts.site["ex_post"] = DecisionSite(enabled=True)
     folder = write_session_md(
         cfg.vault_root / "projects" / "p" / "sessions" / "s1",
         type="session", id="ses-ex", project="p", date="2026-11-01",
@@ -144,7 +144,7 @@ def test_a_backend_failure_logs_a_miss_and_the_wrap_still_completes(replayed, mo
 
     misses = [json.loads(line) for line in
               (folder / "events.jsonl").read_text(encoding="utf-8").splitlines()
-              if '"decision_miss"' in line]
+              if '"verdict_miss"' in line]
     assert {(m["site"], m["source"], m["turn"]) for m in misses} == {
         ("ex_post", "prompttime", 1), ("ex_post", "onthefly", 1),
         ("ex_post", "onthefly", 2), ("ex_post", "startup", None),

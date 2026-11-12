@@ -22,6 +22,17 @@ PostToolUse (Skill|Write|Edit|Bash): Buffers events to JSONL. Session note
   row; a prompt that invokes a skill by the harness's slash form writes the
   same row tagged ``declared: prompt``.
 Stop: Reconstructs session from buffer, writes summary, indexes once.
+  With ``[hooks.stop] unverified_claim_nudge`` on (default off, the #345
+  seam), a final message claiming a verification with no test command run
+  this turn blocks the Stop once with a nudge.
+PreCompact: one ``compact`` row in the buffer where the harness maps the
+  event (#353); an unmapped harness logs that and does nothing.
+
+Hook behaviour is a knob (dec-4f158b58 layer 1, dec-6d5f1913): the per-event
+budgets and the inline context cap are ``min([hooks] knob, profile
+literal)``, a knob above its literal is refused with one log line, and an
+event the rsi-rail ``hooks/hooks.toml`` disables exits before any work (the
+plugin route registers every event; this is where it is dropped there).
 
 Duplicate deliveries (#161): when a lifecycle event arrives carrying a
   wire id the harness minted for it (``tool_use_id`` / ``turn_id``), the
@@ -250,16 +261,64 @@ def _hook_started() -> float:
 
 
 def _hook_budget_remaining(event: str, started: float) -> float | None:
-    """Seconds left of the firing harness's budget for ``event`` (its
-    profile's ``hook_budget_ms``) since ``started``, less the reply margin;
-    ``None`` when the profile sets no budget for the event."""
+    """Seconds left of the budget in force for ``event`` since ``started``,
+    less the reply margin; ``None`` when neither the firing harness's
+    profile nor a ``[hooks.budget_ms]`` knob sets one.
+
+    The budget in force is ``min(knob, profile literal)``
+    (:func:`_effective_hooks`): the literal is the harness's own wall clock,
+    which no knob can lengthen."""
     from thinkweave.core import harness
 
     profile = harness.lookup(_harness_id())
-    budget_ms = (profile.hook_budget_ms if profile else {}).get(event)
+    literals = profile.hook_budget_ms if profile else {}
+    cap = profile.additional_context_cap_chars if profile else None
+    budget_ms = _effective_hooks(_load_config(), literals, cap).budget_ms.get(event)
     if not budget_ms:
         return None
     return budget_ms / 1000 - (time.monotonic() - started) - _HOOK_BUDGET_MARGIN_SECONDS
+
+
+#: Refusal lines already logged by this hook process: one line per refusal,
+#: however many times the delivery reads its limits.
+_refusals_logged: set[str] = set()
+
+
+def _effective_hooks(cfg, budget_literals, cap_literal):
+    """``cfg.hooks`` against the firing harness's literals
+    (``Hooks.effective``), each refusal of a knob above its literal logged
+    once per delivery (dec-4f158b58: a knob only lowers a literal)."""
+    eff = cfg.hooks.effective(budget_literals, cap_literal)
+    for line in eff.refused:
+        if line not in _refusals_logged:
+            _refusals_logged.add(line)
+            _log_info("hooks", f"{_harness_id()}: {line}")
+    return eff
+
+
+def _phase(event: str) -> str:
+    """The argv phase the hook commands pass for a canonical event
+    (``SessionStart`` → ``session_start``), derived so the two cannot drift."""
+    return re.sub(r"(?<!^)([A-Z])", r"_\1", event).lower()
+
+
+def _rail_disabled(cfg, hook_type: str) -> str:
+    """The canonical event this delivery is when the rsi-rail
+    ``hooks/hooks.toml`` disables it, else ``""``.
+
+    The plugin route registers every event from the plugin's hooks.json and
+    Claude Code cannot drop one plugin hook, so a disabled event is dropped
+    here instead, before any work: one TOML read, harness-neutral (on the
+    settings and file routes the event is simply not registered).
+    """
+    if not cfg.rsi_rail:
+        return ""
+    from thinkweave.core import harness, rail_hooks
+
+    event = next((e for e in harness.CANONICAL_EVENTS if _phase(e) == hook_type), "")
+    if not event:
+        return ""
+    return event if event in rail_hooks.read(cfg.rsi_rail).disabled else ""
 
 
 def _firing_profile():
@@ -315,6 +374,7 @@ _PLUGIN_MCP_PREFIX = "mcp__plugin_thinkweave_thinkweave__"
 def main() -> None:
     global _LOG_DIR
     _LOG_DIR = None  # this delivery's config decides where its log goes
+    _refusals_logged.clear()
     hook_type = sys.argv[1] if len(sys.argv) > 1 else ""
     hook_input = _read_stdin()
     tool_name = hook_input.get("tool_name", "")
@@ -333,13 +393,25 @@ def main() -> None:
     try:
         from thinkweave.core.config import is_vault_initialized
 
-        if not is_vault_initialized(_load_config()):
+        cfg = _load_config()
+        if not is_vault_initialized(cfg):
             _output()
             return
     except Exception as e:
         _log_error(hook_type, e)
         _output(system_message=_report_failure(hook_type, hook_input, e))
         return
+
+    # An event the rail disables does nothing at all. A rail file that does
+    # not read is reported and the delivery proceeds: hooks.toml decides
+    # registrations, and a typo in it must not silence every hook.
+    try:
+        if _rail_disabled(cfg, hook_type):
+            _output()
+            return
+    except Exception as e:
+        _log_error(f"{hook_type}/rail", e)
+        _pending_messages.append(_report_failure(f"{hook_type}/rail", hook_input, e))
 
     try:
         _track_model(hook_input)
@@ -362,6 +434,8 @@ def main() -> None:
             _handle_subagent_start(hook_input)
         elif hook_type == "subagent_stop":
             _handle_subagent_stop(hook_input)
+        elif hook_type == "pre_compact":
+            _handle_pre_compact(hook_input)
         else:
             # Includes legacy `pre_tool_use` invocations from settings.json
             # entries written before that hook was retired. Falls through
@@ -551,6 +625,28 @@ def _handle_subagent_stop(hook_input: dict) -> None:
             f"duplicate SubagentStop for closed task {stop.task_id} "
             f"(agent {agent_id}); skipped",
         )
+    _output()
+
+
+def _handle_pre_compact(hook_input: dict) -> None:
+    """PreCompact: one ``compact`` row where the harness compacted (#353).
+
+    Row: ``{"ts", "type": "compact", "trigger"?}``, ``trigger`` copied from
+    the input when present (Claude Code sends ``manual`` / ``auto``). A
+    harness whose profile maps no native PreCompact gets a log line saying
+    so and no row: a row there would claim an observation nobody made.
+    """
+    profile = _firing_profile()
+    if not profile.hook_events.get("PreCompact"):
+        _log_info("pre_compact", f"PreCompact is unmapped on {profile.id}; no row written")
+        _output()
+        return
+    session_id = hook_input.get("session_id") or _env_session_id()
+    if session_id:
+        row = {"ts": datetime.now(timezone.utc).isoformat(), "type": "compact"}
+        if trigger := hook_input.get("trigger"):
+            row["trigger"] = str(trigger)
+        _buffer_event(_load_config().weave_dir, session_id, row)
     _output()
 
 
@@ -770,13 +866,20 @@ def _prompt_time_enrichment(
       ``operations/prompt_time_retrieval``'s module docstring for why that
       distinction matters) plus an info line in the hooks log, so a run of
       misses is visible instead of silently re-paying the embedding deadline
-      every turn.
-    - On a prompt-gate miss: a ``decision_miss`` event naming the reason;
+      every turn. When the hook budget left too little to attempt the arm
+      at all, the miss row says ``skipped: "budget"`` (#353).
+    - On a prompt-gate miss: a ``verdict_miss`` event naming the reason;
       the ungated fallback it serves is marked ``fallback`` so it does not
       reset the adaptive skip's miss streak.
+
+    The ``retrieval`` and ``prompt_time_miss`` rows carry ``bytes`` (chars
+    injected this turn) and ``cap`` (the per-turn ceiling,
+    ``max_injected_chars_per_turn``), so the serving chain reads the same
+    way at prompt time as at startup.
     """
     try:
         from thinkweave.operations.prompt_time_retrieval import (
+            MIN_DEADLINE_SECONDS,
             PROMPT_GATE,
             PROMPT_TIME_MISS,
             PROMPT_TIME_TOOL,
@@ -784,19 +887,20 @@ def _prompt_time_enrichment(
         )
         from thinkweave.operations.verdicts import record_miss
 
-        block, served_ids, missed, decision_miss = build_enrichment(
+        cap = cfg.retrieval_prompt_time.max_injected_chars_per_turn
+        block, served_ids, missed, verdict_miss = build_enrichment(
             cfg, session_id, prompt_text, deadline=deadline, task=task
         )
 
-        if decision_miss:
+        if verdict_miss:
             record_miss(
-                cfg, PROMPT_GATE, decision_miss, session_id=session_id,
+                cfg, PROMPT_GATE, verdict_miss, session_id=session_id,
                 source="prompttime", harness=_harness_id(),
                 delivery_id=f"{delivery_id}:decision-miss" if delivery_id else "",
             )
             _log_info(
                 "prompt_time_enrichment",
-                f"prompt gate miss for session {session_id}: {decision_miss}",
+                f"prompt gate miss for session {session_id}: {verdict_miss}",
             )
 
         if missed:
@@ -804,13 +908,18 @@ def _prompt_time_enrichment(
                 "ts": now,
                 "type": PROMPT_TIME_MISS,
                 "session_id": session_id,
+                "bytes": 0,
+                "cap": cap,
             }
+            if deadline is not None and deadline < MIN_DEADLINE_SECONDS:
+                miss["skipped"] = "budget"
             if delivery_id:
                 miss["delivery_id"] = f"{delivery_id}:prompt-time-miss"
             _buffer_event(cfg.weave_dir, session_id, miss)
             _log_info(
                 "prompt_time_enrichment",
-                f"deadline miss for session {session_id}",
+                f"{'budget skip' if miss.get('skipped') else 'deadline miss'} "
+                f"for session {session_id}",
             )
 
         if not block:
@@ -823,8 +932,10 @@ def _prompt_time_enrichment(
             "returned_ids": served_ids,
             "chars": len(block),
             "token_est": len(block) // 4,
+            "bytes": len(block),
+            "cap": cap,
         }
-        if decision_miss:
+        if verdict_miss:
             served["fallback"] = True
         if delivery_id:
             served["delivery_id"] = f"{delivery_id}:prompt-time-retrieval"
@@ -1704,6 +1815,10 @@ def _handle_stop(hook_input: dict) -> None:
         )
 
         cfg = _load_config()
+        if cfg.hooks.stop.unverified_claim_nudge and _nudge_unverified_claim(
+            cfg, session_id, hook_input
+        ):
+            return
         vm = VaultManager(config=cfg)
 
         session_path = _find_session_note(vm, session_id)
@@ -1849,6 +1964,110 @@ def _record_turn_end(cfg, source_session: str, folder: Path, hook_input: dict) -
     end = Ledger.read(cfg, source_session, folder).turn_end(message)
     if end:
         _buffer_event(cfg.weave_dir, source_session, end.as_event())
+
+
+#: The verification claims the Stop nudge looks for in the final assistant
+#: message, matched case-insensitively as whole words ("unverified" is not
+#: "verified"). A fixed set, not
+#: a classifier: the seam (#345) is "a claim with no test run", and the
+#: phrases are the claims that have been made without one.
+UNVERIFIED_CLAIM_PHRASES = (
+    "all tests pass",
+    "tests pass",
+    "suite is green",
+    "ci is green",
+    "verified",
+)
+
+_NUDGE_TEXT = (
+    "thinkweave: the last message says {phrase!r}, but no test command ran "
+    "this turn. Run the tests, or say what verified it, before claiming it."
+)
+
+#: Bytes read from the end of a transcript to find the last assistant text.
+_TRANSCRIPT_TAIL_BYTES = 262_144
+
+
+def _nudge_unverified_claim(cfg, session_id: str, hook_input: dict) -> bool:
+    """The #345 seam, behind ``[hooks.stop] unverified_claim_nudge``.
+
+    Blocks this Stop (and returns True) when the final assistant message
+    contains a phrase of :data:`UNVERIFIED_CLAIM_PHRASES` and the buffer
+    holds no test-command row since the turn's prompt. Writes one row:
+    ``{"ts", "type": "nudge", "kind": "unverified_claim", "phrase"}``.
+
+    ``stop_hook_active`` means this Stop follows a block already, so it
+    passes: one nudge per turn, never a loop. A harness whose Stop input
+    carries no ``transcript_path`` has no final message to read; the seam
+    logs that and passes.
+    """
+    if hook_input.get("stop_hook_active"):
+        return False
+    transcript = str(hook_input.get("transcript_path") or "")
+    if not transcript:
+        _log_info(
+            "stop",
+            f"unverified-claim nudge: {_harness_id()} sends no transcript_path; "
+            "the final message is unread and the Stop passes",
+        )
+        return False
+    text = _last_assistant_text(Path(transcript)).lower()
+    phrase = next(
+        (p for p in UNVERIFIED_CLAIM_PHRASES if re.search(rf"\b{re.escape(p)}\b", text)),
+        "",
+    )
+    if not phrase or _turn_ran_tests(_read_buffer(cfg.weave_dir, session_id)):
+        return False
+    _buffer_event(cfg.weave_dir, session_id, {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "type": "nudge",
+        "kind": "unverified_claim",
+        "phrase": phrase,
+    })
+    _output(decision="block", reason=_NUDGE_TEXT.format(phrase=phrase))
+    return True
+
+
+def _turn_ran_tests(events: list[dict]) -> bool:
+    """Whether a test command ran since the turn's prompt (the buffer's last
+    ``prompt`` row; the whole buffer when it holds none)."""
+    start = max(
+        (i for i, ev in enumerate(events) if ev.get("type") == "prompt"), default=0
+    )
+    return any(
+        ev.get("tool") == "Bash"
+        and (ev.get("test_run") or _is_test_command(str(ev.get("command") or "")))
+        for ev in events[start:]
+    )
+
+
+def _last_assistant_text(transcript: Path) -> str:
+    """The text of the last assistant message in a Claude Code JSONL
+    transcript, read from its tail; ``""`` when there is none."""
+    try:
+        with open(transcript, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(f.tell() - _TRANSCRIPT_TAIL_BYTES, 0))
+            lines = f.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict) or row.get("type") != "assistant":
+            continue
+        content = (row.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        texts = [
+            b.get("text", "") for b in content or []
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        if texts:
+            return "\n".join(texts)
+    return ""
 
 
 def _merge_evidence(existing, fresh: list) -> list:
@@ -2002,9 +2221,9 @@ def _handle_session_start(hook_input: dict) -> None:
     """
     try:
         from thinkweave.retrieval.context import (
-            SESSION_START_SECTIONS,
+            CHARS_PER_TOKEN,
             build_project_context,
-            session_start_budget_tokens,
+            serving_plan,
         )
 
         from thinkweave.operations.retrieval_log import parse_returned_ids
@@ -2051,13 +2270,22 @@ def _handle_session_start(hook_input: dict) -> None:
         # The budget comes from the harness's own inline cap, less the room
         # the memory-seam guard needs at the front of the payload: above the
         # cap the harness files the context and shows a preview, and a
-        # preview is not context the model has.
-        cap = profile.additional_context_cap_chars
+        # preview is not context the model has. ``[context.startup]`` may set
+        # the sections and the budget instead (#352); unset, both are the
+        # module defaults.
+        plan = serving_plan(cfg)
+        # The inline cap in force: min([hooks] additional_context_cap_chars,
+        # the profile's measured cap) — a knob can shrink the payload, never
+        # push it past what the harness puts in context (dec-4f158b58).
+        cap = _effective_hooks(
+            cfg, profile.hook_budget_ms, profile.additional_context_cap_chars
+        ).cap_chars
+        budget_chars = plan.startup_budget_chars(cap)
         payload = build_project_context(
             cfg,
             project,
-            sections=list(SESSION_START_SECTIONS),
-            budget_tokens=session_start_budget_tokens(cap),
+            sections=plan.startup_sections(),
+            budget_tokens=max(budget_chars // CHARS_PER_TOKEN, 1),
             omit_empty=True,
         )
 
@@ -2080,6 +2308,30 @@ def _handle_session_start(hook_input: dict) -> None:
             except Exception as e:
                 _log_error("session_start_chain", e)
 
+        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
+        # served notes against the flagged-twin index and injects a small
+        # guard ONLY when a note in this session's context is the twin of a
+        # durable CC memory flagged stale/diverged. Empty string = inject
+        # nothing (the common case). Best-effort; never blocks the payload.
+        # Runs on everything the session relies on — the ids delivered now
+        # UNION this session's own prior serves. Computed on the replay path
+        # too: a correctness interrupt outweighs the skip's no-op purity.
+        try:
+            from thinkweave.synthesis.memory_seam import session_guard_section
+
+            guard = session_guard_section(
+                cfg, sorted(set(served_ids) | prior_ids)
+            )
+        except Exception as e:
+            _log_error("session_start_seam", e)
+            guard = ""
+
+        # Guard rides at the TOP — it's a correctness interrupt on notes the
+        # model is about to rely on, so it must be seen before the context.
+        full = f"{guard}\n{payload}" if guard else payload
+        if not payload.strip() and not guard:
+            full = ""
+
         # Record the startup event regardless of whether we emit the payload —
         # an empty payload (cold vault) is itself a fact the RLVR row should
         # carry (n_retrievals_onthefly stays 0, startup_token_est = 0).
@@ -2095,6 +2347,10 @@ def _handle_session_start(hook_input: dict) -> None:
                     # math (CHARS_PER_TOKEN ≈ 4 in retrieval/context.py).
                     "token_est": len(payload) // 4,
                     "disposition": disposition,
+                    # The payload budget in force, in chars (#353).
+                    "cap": budget_chars,
+                    # Chars written to additional context: payload + guard.
+                    "bytes": len(full),
                 }
                 if lifecycle:
                     event["lifecycle"] = lifecycle
@@ -2147,24 +2403,6 @@ def _handle_session_start(hook_input: dict) -> None:
             _log_error("session_start_capture", e)
             capture_error = e
 
-        # Memory-seam serving lens — NOT a whole-seam dump. Cross-matches the
-        # served notes against the flagged-twin index and injects a small
-        # guard ONLY when a note in this session's context is the twin of a
-        # durable CC memory flagged stale/diverged. Empty string = inject
-        # nothing (the common case). Best-effort; never blocks the payload.
-        # Runs on everything the session relies on — the ids delivered now
-        # UNION this session's own prior serves. Computed on the replay path
-        # too: a correctness interrupt outweighs the skip's no-op purity.
-        try:
-            from thinkweave.synthesis.memory_seam import session_guard_section
-
-            guard = session_guard_section(
-                cfg, sorted(set(served_ids) | prior_ids)
-            )
-        except Exception as e:
-            _log_error("session_start_seam", e)
-            guard = ""
-
         sysmsg = (
             _report_failure("session_start_capture", hook_input, capture_error)
             if capture_error
@@ -2179,13 +2417,10 @@ def _handle_session_start(hook_input: dict) -> None:
             )
             return
 
-        if not payload.strip() and not guard:
+        if not full:
             _output(system_message=sysmsg)
             return
 
-        # Guard rides at the TOP — it's a correctness interrupt on notes the
-        # model is about to rely on, so it must be seen before the context.
-        full = f"{guard}\n{payload}" if guard else payload
         if notice := _spill_notice(len(full), cap):
             sysmsg = f"{sysmsg}\n{notice}" if sysmsg else notice
         _output(
@@ -2210,6 +2445,9 @@ def _output(
     system_message: str = "",
     additional_context: str = "",
     hook_event_name: str = "",
+    *,
+    decision: str = "",
+    reason: str = "",
 ) -> None:
     """Write hook response to stdout.
 
@@ -2219,8 +2457,14 @@ def _output(
             (SessionStart). Injected as a system message before the first turn.
         hook_event_name: The Claude Code hook event name (e.g. ``SessionStart``).
             Required when ``additional_context`` is set.
+        decision, reason: A Stop hook's block (``{"decision": "block",
+            "reason": ...}``): the harness keeps the turn going and shows
+            the model ``reason``.
     """
     result: dict = {}
+    if decision:
+        result["decision"] = decision
+        result["reason"] = reason
     system_message = "\n".join(filter(None, [*_pending_messages, system_message]))
     _pending_messages.clear()
     if system_message:
