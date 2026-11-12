@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from typing import TypedDict
 
 from thinkweave.core.config import load_config
 from thinkweave.core.harness import active as active_harness
@@ -237,7 +238,17 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
     return out
 
 
-def _path_history(db, dec_id: str, file_paths: list) -> list[dict]:
+class PathHistoryEntry(TypedDict):
+    """One other decision on a judged decision's file path, as a worklist
+    item's ``path_history`` carries it."""
+
+    decision_id: str
+    date: str
+    status: str
+    prediction_history: list[dict]
+
+
+def _path_history(db, dec_id: str, file_paths: list) -> list[PathHistoryEntry]:
     """Every other decision on any of ``file_paths``, oldest first, with its
     status and verdicts."""
     paths = [str(f) for f in file_paths if f]
@@ -250,15 +261,15 @@ def _path_history(db, dec_id: str, file_paths: list) -> list[dict]:
         "AND n.type = 'decision' AND n.id != ? ORDER BY n.date, n.id",
         (*paths, dec_id),
     ).fetchall()
-    history = []
+    history: list[PathHistoryEntry] = []
     for row in rows:
         fm = json.loads(row["frontmatter"] or "{}")
         history.append(
-            {
-                "decision_id": row["id"],
-                "date": row["date"] or "",
-                "status": fm.get("status", ""),
-                "prediction_history": fm.get("prediction_history") or [],
-            }
+            PathHistoryEntry(
+                decision_id=row["id"],
+                date=row["date"] or "",
+                status=fm.get("status", ""),
+                prediction_history=fm.get("prediction_history") or [],
+            )
         )
     return history
