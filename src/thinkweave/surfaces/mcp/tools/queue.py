@@ -69,7 +69,7 @@ def handle(cfg: Config, args: dict):
 
     from thinkweave.acquisition.sources import all_specs
     from thinkweave.acquisition.sources.queue import Queue
-    from thinkweave.operations.queue import enqueue, enqueue_line
+    from thinkweave.operations.queue import enqueue
 
     action = args.get("action", "")
     source_type = args.get("source_type", "") or ""
@@ -121,7 +121,7 @@ def handle(cfg: Config, args: dict):
         item = args.get("item") or {}
         if not isinstance(item, dict):
             return [TextContent(type="text", text="enqueue requires item dict")]
-        return [TextContent(type="text", text=enqueue_line(enqueue(cfg, source_type, item)))]
+        return [TextContent(type="text", text=enqueue(cfg, source_type, item).line())]
 
     if action == "archive":
         if not source_type:

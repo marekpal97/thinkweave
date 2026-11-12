@@ -8,6 +8,8 @@ type, the ``acquisition_dedup`` question set against the vault's sources.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from thinkweave.core.config import Config
 from thinkweave.core.decision_provider import DecisionProvider
 from thinkweave.acquisition.sources import all_specs, get_spec, load_user_config
@@ -48,13 +50,10 @@ def enqueue(
     item: QueueItem | dict,
     *,
     provider: DecisionProvider | None = None,
-) -> dict:
+) -> Enqueued:
     """Enqueue ``item`` unless it duplicates a queued item or a vault source.
 
-    Returns {"id": ..., "deduped": bool, "conflict": str|None}; ``conflict``
-    is the queue item that collides on ``sources.<type>.dedup_keys``, else
-    the source note the ``acquisition_dedup`` question set judged ``item`` a
-    duplicate of. The ``item`` is a :class:`QueueItem`-shaped dict — see
+    The ``item`` is a :class:`QueueItem`-shaped dict — see
     ``sources/queue.py`` for the documented field set.
     """
     sources_cfg = load_user_config(cfg.vault_root).get("sources", {})
@@ -63,16 +62,32 @@ def enqueue(
     conflict = q.dedup_check(item, keys) if keys else None
     conflict = conflict or _duplicated_source(cfg, source_type, item, provider)
     if conflict:
-        return {"id": "", "deduped": True, "conflict": conflict}
-    new_id = q.enqueue(item)
-    return {"id": new_id, "deduped": False, "conflict": None}
+        return Enqueued(conflict=conflict)
+    return Enqueued(id=q.enqueue(item))
 
 
-def enqueue_line(result: dict) -> str:
-    """One line reporting an :func:`enqueue` result."""
-    if result["deduped"]:
-        return f"duplicate of {result['conflict']}; not enqueued"
-    return f"enqueued {result['id']}"
+@dataclass(frozen=True)
+class Enqueued:
+    """The result of one :func:`enqueue`: the new queue item's ``id``, or the
+    ``conflict`` that kept the item out.
+
+    ``conflict`` is the queue item that collides on
+    ``sources.<type>.dedup_keys``, else the source note the
+    ``acquisition_dedup`` question set judged the item a duplicate of.
+    """
+
+    id: str = ""
+    conflict: str = ""
+
+    @property
+    def deduped(self) -> bool:
+        return bool(self.conflict)
+
+    def line(self) -> str:
+        """The result as one line of surface output."""
+        if self.deduped:
+            return f"duplicate of {self.conflict}; not enqueued"
+        return f"enqueued {self.id}"
 
 
 def _duplicated_source(

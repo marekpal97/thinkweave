@@ -58,12 +58,12 @@ def cmd_queue(args: argparse.Namespace) -> None:
         return
 
     if action == "enqueue":
-        from thinkweave.operations.queue import enqueue, enqueue_line
+        from thinkweave.operations.queue import enqueue
 
         if not source_type or not args.item:
             print("enqueue requires a source_type and --item '<json object>'.")
             sys.exit(1)
-        print(enqueue_line(enqueue(cfg, source_type, json.loads(args.item))))
+        print(enqueue(cfg, source_type, json.loads(args.item)).line())
         return
 
     if action == "peek":

@@ -8,7 +8,7 @@ from thinkweave.core.config import QuestionSet
 from thinkweave.core.decision_provider import FakeDecisionProvider
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
-from thinkweave.operations.queue import enqueue
+from thinkweave.operations.queue import Enqueued, enqueue
 from thinkweave.operations.verdicts import ConceptGuard, judge_duplicate
 from thinkweave.synthesis.concepts import split_concepts_by_ontology
 
@@ -110,7 +110,7 @@ def test_a_concept_grain_duplicate_is_recorded_and_not_enqueued(vault_factory):
         provider=FakeDecisionProvider(),
     )
 
-    assert result == {"id": "", "deduped": True, "conflict": existing}
+    assert result == Enqueued(conflict=existing) and result.deduped
     assert Queue.for_source_type("article", cfg.vault_root).peek(10) == []
     assert _verdict_rows(cfg) == [(
         "acquisition_dedup", "https://new.example/attention", "choice", existing,
@@ -128,7 +128,7 @@ def test_an_event_grain_item_never_reaches_the_dedup_question_set(vault_factory)
     )
 
     assert fake.calls == []
-    assert result["deduped"] is False and result["id"]
+    assert not result.deduped and result.id
     assert _verdict_rows(cfg) == []
 
 
@@ -140,7 +140,7 @@ def test_an_unconfident_duplicate_is_enqueued(vault_factory):
         provider=FakeDecisionProvider(confidence=0.6),
     )
 
-    assert result["deduped"] is False and result["id"]
+    assert not result.deduped and result.id
 
 
 def test_a_failed_call_is_logged_as_a_miss_and_gives_no_verdict(vault_factory):
