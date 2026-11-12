@@ -14,8 +14,10 @@ from thinkweave.operations.verdicts import CitationProposal, backfill_citations
 
 
 def _vault_with_served_decision(vault_factory):
-    """A decision whose session served two notes; returns the config, the
-    decision's path and id, and the ids of the relied-on and the ignored note."""
+    """A decision whose session served two notes and the session itself;
+    returns the config, the decision's path and id, the ids of the relied-on
+    and the ignored note, and a provider that scores the relied-on note and
+    the session high and the ignored note low."""
     handle = vault_factory()
     vault = handle.vault
     relied, ignored = (
@@ -37,24 +39,23 @@ def _vault_with_served_decision(vault_factory):
         extra_frontmatter={"status": "accepted", "source_session": session_id},
     )
     (session.parent / "retrieval_log.jsonl").write_text(
-        json.dumps({"ts": "t1", "type": "retrieval", "returned_ids": [relied, ignored]}) + "\n",
+        json.dumps({"ts": "t1", "type": "retrieval", "returned_ids": [relied, ignored, session_id]}) + "\n",
         encoding="utf-8",
     )
     handle.indexed()
     cfg = handle.config
     cfg.verdicts.question_set["citation"] = QuestionSet(enabled=True, accept=0.7)
-    return cfg, decision, vault.read_note(decision).id, relied, ignored
-
-
-def _provider(relied: str, ignored: str) -> FakeDecisionProvider:
-    return FakeDecisionProvider(nouls={relied: 0.9, ignored: 0.2})
+    provider = FakeDecisionProvider(nouls={relied: 0.9, ignored: 0.2, session_id: 0.95})
+    return cfg, decision, vault.read_note(decision).id, relied, ignored, provider
 
 
 def test_a_dry_run_lists_proposals_and_writes_nothing(vault_factory):
-    cfg, decision, decision_id, relied, ignored = _vault_with_served_decision(vault_factory)
+    cfg, decision, decision_id, relied, _ignored, provider = _vault_with_served_decision(
+        vault_factory
+    )
     before = decision.read_text(encoding="utf-8")
 
-    result = backfill_citations(cfg, dry_run=True, provider=_provider(relied, ignored))
+    result = backfill_citations(cfg, dry_run=True, provider=provider)
 
     assert result.proposals == [
         CitationProposal(decision_id, "Gate the reindex on mtime", (relied,))
@@ -65,8 +66,9 @@ def test_a_dry_run_lists_proposals_and_writes_nothing(vault_factory):
 
 
 def test_two_real_runs_write_the_cites_once(vault_factory):
-    cfg, decision, decision_id, relied, ignored = _vault_with_served_decision(vault_factory)
-    provider = _provider(relied, ignored)
+    cfg, decision, decision_id, relied, ignored, provider = _vault_with_served_decision(
+        vault_factory
+    )
 
     first = backfill_citations(cfg, provider=provider)
     after_first = decision.read_text(encoding="utf-8")
@@ -82,12 +84,14 @@ def test_two_real_runs_write_the_cites_once(vault_factory):
 
 
 def test_a_failed_call_is_a_miss_and_leaves_the_decision_for_the_next_run(vault_factory):
-    cfg, decision, decision_id, relied, ignored = _vault_with_served_decision(vault_factory)
+    cfg, decision, decision_id, _relied, _ignored, provider = _vault_with_served_decision(
+        vault_factory
+    )
     before = decision.read_text(encoding="utf-8")
 
     failed = backfill_citations(cfg, provider=FakeDecisionProvider(error=RuntimeError("429")))
     after_failure = decision.read_text(encoding="utf-8")
-    retried = backfill_citations(cfg, provider=_provider(relied, ignored))
+    retried = backfill_citations(cfg, provider=provider)
 
     assert failed.written == 0 and len(failed.misses) == 1
     assert decision_id in failed.misses[0] and "429" in failed.misses[0]

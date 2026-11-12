@@ -918,7 +918,8 @@ def _note_texts(cfg: Config, ids: set[str]) -> dict[str, str]:
 
 def _uncited_decisions(cfg: Config, vault) -> tuple[list[tuple], dict[str, str]]:
     """Each decision the backfill still owes a call, with the ids of the
-    vault notes its session was served, and the id-to-path map of the vault.
+    vault notes its session was served (the decision and its own session
+    left out), and the id-to-path map of the vault.
 
     A decision is owed when the vault log holds no ``citation`` verdict for
     it, its body cites no note id, and its session served at least one note.
@@ -945,7 +946,8 @@ def _uncited_decisions(cfg: Config, vault) -> tuple[list[tuple], dict[str, str]]
                 continue
             served = sorted({
                 r["note_id"] for r in served_rows(idx, session)
-                if _judged(r["note_id"]) and r["note_id"] in paths and r["note_id"] != row["id"]
+                if _judged(r["note_id"]) and r["note_id"] in paths
+                and r["note_id"] not in (row["id"], session)
             })
             if not served:
                 continue
