@@ -610,6 +610,11 @@ _MANIFEST = _closed_dict({
         "hook_budget_ms": _str_int_map, "additional_context_cap_chars": _int,
         "nudge": _bool,
     }),
+    # The System 1 question sets turned on ([verdicts.<question_set>]), each with
+    # the backend, model and accept threshold its knobs name.
+    "verdicts": _dict_list({
+        "question_set": _str, "backend": _str, "model": _str, "accept": _number,
+    }),
 })
 
 _ENVELOPE_CHECKERS = {

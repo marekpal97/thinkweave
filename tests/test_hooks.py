@@ -2111,7 +2111,7 @@ class TestPromptTimeEnrichment:
         block = "📎 Possibly relevant from your vault (optional):\n- [[n-aaaaaa01]] (note) — X"
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **k: (block, ["n-aaaaaa01"], False),
+            lambda *a, **k: (block, ["n-aaaaaa01"], False, ""),
         )
 
         handler_mod._handle_user_prompt_submit(
@@ -2148,7 +2148,7 @@ class TestPromptTimeEnrichment:
         cfg = self._cfg(tmp_path, monkeypatch)
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **k: (None, [], True),
+            lambda *a, **k: (None, [], True, ""),
         )
 
         handler_mod._handle_user_prompt_submit(
@@ -2989,7 +2989,7 @@ class TestIndexWriteLockRetry:
     def test_index_retry_stops_at_the_hook_deadline(self, tmp_path: Path, monkeypatch):
         """A hook the harness is timing drops the locked write once the next
         wait would land past its budget — the note stays on disk, the ladder's
-        7.5 s is never spent inside a 2.5 s Pi hook."""
+        7.5 s is never spent inside a 6 s Pi hook."""
         import threading
         import time
 
@@ -3060,8 +3060,8 @@ class TestUserPromptSubmitHookBudget:
         monkeypatch.setattr(handler_mod, "_hook_harness", lambda: harness_id)
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda cfg, sid, text, *, deadline=None: captured.__setitem__("deadline", deadline)
-            or (None, [], False),
+            lambda cfg, sid, text, *, deadline=None, task="": captured.__setitem__("deadline", deadline)
+            or (None, [], False, ""),
         )
         handler_mod._handle_user_prompt_submit(
             {"session_id": "ses-budget", "prompt": "please explain how the indexer resolves a session note", "cwd": "/p"}
@@ -3072,8 +3072,8 @@ class TestUserPromptSubmitHookBudget:
 
         captured: dict = {}
         self._run(Config(vault_root=tmp_path / "vault"), monkeypatch, "pi", captured)
-        # Pi's shim waits 2.5 s; the handler keeps 0.3 s back for the reply.
-        assert 0 < captured["deadline"] <= 2.2
+        # Pi's shim waits 6 s; the handler keeps 0.3 s back for the reply.
+        assert 0 < captured["deadline"] <= 5.7
 
     def test_a_harness_without_a_budget_leaves_the_configured_deadline_alone(self, tmp_path: Path, monkeypatch):
         from thinkweave.core.config import Config
@@ -3089,7 +3089,7 @@ class TestUserPromptSubmitHookBudget:
 
         monkeypatch.setattr(handler_mod, "_hook_harness", lambda: "pi")
         fresh = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic())
-        assert 2.1 < fresh <= 2.2
+        assert 5.6 < fresh <= 5.7
         spent = handler_mod._hook_budget_remaining("UserPromptSubmit", time.monotonic() - 10)
         assert spent < 0
         assert handler_mod._hook_budget_remaining("SubagentStart", time.monotonic()) is None
@@ -3334,7 +3334,7 @@ class TestRailLinks:
         # The shim spawned the launcher 1.5 s ago; that start-up is Pi's wait.
         monkeypatch.setenv(handler_mod._SPAWNED_AT_ENV, str(int((time.time() - 1.5) * 1000)))
         spent = handler_mod._hook_budget_remaining("UserPromptSubmit", handler_mod._hook_started())
-        assert 0.55 < spent <= 0.75
+        assert 4.05 < spent <= 4.25
 
     def test_a_bad_or_stale_spawn_stamp_is_ignored(self, monkeypatch):
         import time
@@ -3345,4 +3345,4 @@ class TestRailLinks:
         for raw in ("garbage", "", str(int((time.time() - 600) * 1000)), str(int((time.time() + 60) * 1000))):
             monkeypatch.setenv(handler_mod._SPAWNED_AT_ENV, raw)
             fresh = handler_mod._hook_budget_remaining("UserPromptSubmit", handler_mod._hook_started())
-            assert 2.1 < fresh <= 2.2, raw
+            assert 5.6 < fresh <= 5.7, raw

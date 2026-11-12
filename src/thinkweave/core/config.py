@@ -283,7 +283,10 @@ def _apply_fields(obj, table: dict, prefix: str, cfg: Config, path: Path | None)
             continue
         if md.get("each"):
             entries = {k: v for k, v in table.items() if isinstance(v, dict)}
-            _check_choices(entries, md["choices_ref"], prefix, path)
+            _check_choices(
+                entries, md["choices_ref"], prefix, path,
+                noun=md.get("choice_noun") or "section",
+            )
             target = getattr(obj, f.name)
             for name, sub in entries.items():
                 entry = target.setdefault(name, md["each"]())
@@ -322,31 +325,29 @@ class PromptTimeRetrieval:
     """Config for prompt-time retrieval enrichment (R2).
 
     On each substantive user prompt the UserPromptSubmit hook runs a bounded
-    similarity search, drops anything already served this session, applies
-    hard caps, and prepends a small ignorable block. Defaults are deliberately
+    retrieval (gated by the ``prompt_gate`` question set when it is on),
+    drops anything already served this session, applies hard caps, and
+    prepends a small ignorable block. Defaults are deliberately
     conservative — this is default-on, so the caps are the safety net against
     the noise-tax failure mode that retired the old pre-Edit injection.
     """
 
     enabled: bool = knob(True, read_at="UserPromptSubmit", parse=bool)
     # Triviality gate only — skip trivially short inputs and slash-commands so
-    # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter;
-    # relevance is decided entirely by the cosine floor below.
+    # we don't pay an embedding on "ok"/"yes"/"/clear". NOT a semantic filter.
     min_prompt_chars: int = knob(12, read_at="UserPromptSubmit", parse=int)
     # Wall-clock budget for the similarity (embedding) arm, run in a daemon
-    # thread; on overrun the arm is abandoned and the turn gets no injection
-    # (see operations/prompt_time_retrieval.py — there is no FTS fallback,
-    # it was a structural no-op against prose prompts and was removed).
-    # Generous enough to let the embedding complete on a normal network; kept
+    # thread; on overrun the arm is abandoned. Generous enough to let the embedding complete on a normal network; kept
     # under the UserPromptSubmit hook timeout.
     embed_deadline_seconds: float = knob(4.0, read_at="UserPromptSubmit", parse=float)
-    # Adaptive skip — consecutive deadline misses (embedding thread still
-    # running when the wall-clock deadline hits) this session before the
-    # similarity arm is skipped for the rest of the session. Protects against
-    # re-paying a sunk ~embed_deadline_seconds cost on every remaining turn
-    # when the embedding endpoint is slow or unreachable.
+    # Adaptive skip — consecutive misses (an embedding deadline or a prompt
+    # gate call that gave no verdict) this session before prompt-time
+    # retrieval is skipped for the rest of the session. Protects against
+    # re-paying a sunk deadline on every remaining turn when an endpoint is
+    # slow or unreachable.
     deadline_miss_limit: int = knob(3, read_at="UserPromptSubmit", parse=int)
-    # Cosine floor on the similarity arm — THE relevance gate. Drops low-cosine
+    # Cosine floor on the similarity arm — the relevance gate while the
+    # prompt_gate question set is off (the gate replaces it). Drops low-cosine
     # nearest neighbours, so generic/meta prompts (~0.22–0.36) no-op while
     # domain prompts (~0.40+) fire. Model-dependent (text-embedding-3-small);
     # retune if you swap embedding models.
@@ -528,6 +529,45 @@ class EffectiveHooks:
     cap_chars: int | None
     nudge: bool
     refused: tuple[str, ...] = ()
+
+
+_VERDICT_EVENTS = ("UserPromptSubmit", "wrap")
+
+
+@dataclass
+class QuestionSet:
+    """One System 1 question set's serving policy (``[verdicts.<question_set>]``).
+
+    Every question set is off until a knob turns it on. An empty ``backend`` or
+    ``model`` takes the ``api.yaml`` default; ``accept`` is the probability a
+    verdict must reach, ``pool_size`` the candidates scored per call, and
+    ``deadline_ms`` how long the question set waits for the backend. The prompt gate
+    reads its question set at UserPromptSubmit and the ex-post judge at wrap; the
+    pool and the deadline bound the prompt gate only.
+    """
+
+    enabled: bool = knob(False, read_at=_VERDICT_EVENTS, parse=bool)
+    backend: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
+    model: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
+    accept: float = knob(0.7, read_at=_VERDICT_EVENTS, parse=float)
+    pool_size: int = knob(30, read_at="UserPromptSubmit", parse=int)
+    deadline_ms: int = knob(1500, read_at="UserPromptSubmit", parse=int)
+
+
+@dataclass
+class Verdicts:
+    """``[verdicts]``: the System 1 question sets, one sub-table each."""
+
+    # ``[verdicts.<question_set>]`` sub-tables, keyed by name; an unknown question set
+    # is refused by name.
+    question_set: dict[str, QuestionSet] = knob(
+        default_factory=dict,
+        read_at=_VERDICT_EVENTS,
+        toml="*",
+        each=QuestionSet,
+        choices_ref="thinkweave.operations.verdicts:QUESTION_SETS",
+        choice_noun="question set",
+    )
 
 
 @dataclass
@@ -863,6 +903,13 @@ class Config:
         default_factory=Hooks,
         read_at=("SessionStart", "UserPromptSubmit", "wrap"),
     )
+
+    # System 1 question sets by name (see Verdicts).
+    verdicts: Verdicts = knob(default_factory=Verdicts, read_at=_VERDICT_EVENTS)
+
+    def question_set(self, name: str) -> QuestionSet:
+        """The named question set's policy; an unconfigured question set is off."""
+        return self.verdicts.question_set.get(name) or QuestionSet()
 
     @property
     def weave_dir(self) -> Path:

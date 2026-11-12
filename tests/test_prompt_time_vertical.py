@@ -43,11 +43,12 @@ from thinkweave.core.config import Config
 from thinkweave.core.indexer import Indexer
 from thinkweave.core.schemas import NoteType
 from thinkweave.core.vault import VaultManager
+from thinkweave.operations.verdicts import Ledger
 from thinkweave.operations.prompt_time_retrieval import (
     PROMPT_TIME_MISS,
     PROMPT_TIME_TOOL,
-    _consecutive_trailing_misses,
-    _served_ids_and_stats,
+    _firings,
+    _trailing_misses,
 )
 from thinkweave.surfaces.hooks import handler as hooks_handler
 
@@ -265,8 +266,7 @@ class TestDeadlineMissTelemetryAndSkip:
         misses = [e for e in events if e.get("type") == PROMPT_TIME_MISS]
         assert len(misses) == 1, "deadline miss must not be silent"
 
-        _, firings, _ = _served_ids_and_stats(cfg, "ses-miss-1")
-        assert firings == 0, "a miss must never count as a firing"
+        assert not _firings(Ledger.read(cfg, "ses-miss-1")), "a miss must never count as a firing"
 
         log = (cfg.weave_dir / "hooks.log").read_text(encoding="utf-8")
         assert "deadline miss" in log
@@ -276,7 +276,7 @@ class TestDeadlineMissTelemetryAndSkip:
         limit = cfg.retrieval_prompt_time.deadline_miss_limit
         for _ in range(limit):
             _submit("ses-miss-2", capsys)
-        assert _consecutive_trailing_misses(cfg, "ses-miss-2") == limit
+        assert _trailing_misses(Ledger.read(cfg, "ses-miss-2")) == limit
 
         calls_before = len(provider.calls)
         result = _submit("ses-miss-2", capsys)
@@ -285,7 +285,7 @@ class TestDeadlineMissTelemetryAndSkip:
             "adaptive skip must not attempt (and pay for) a new embedding"
         )
         # The skip itself is not a miss — the streak must not keep growing.
-        assert _consecutive_trailing_misses(cfg, "ses-miss-2") == limit
+        assert _trailing_misses(Ledger.read(cfg, "ses-miss-2")) == limit
 
     def test_success_resets_the_streak(self, slow_vault, capsys):
         cfg, provider = slow_vault
@@ -295,7 +295,7 @@ class TestDeadlineMissTelemetryAndSkip:
         provider.embed_delay = 0.0
         result = _submit("ses-miss-3", capsys)
         assert "hookSpecificOutput" in result
-        assert _consecutive_trailing_misses(cfg, "ses-miss-3") == 0
+        assert _trailing_misses(Ledger.read(cfg, "ses-miss-3")) == 0
 
     def test_miss_events_invisible_to_context_served(self, slow_vault, capsys):
         cfg, provider = slow_vault

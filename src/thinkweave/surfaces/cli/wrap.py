@@ -89,6 +89,8 @@ def cmd_wrap_finalize(args: argparse.Namespace) -> None:
             f"{result.verdicts_skipped} skipped, "
             f"{result.verdicts_unmatched} unmatched"
         )
+    if result.ex_post_rows:
+        print(f"  ex-post: {result.ex_post_rows} verdict row(s)")
     if result.tasks:
         t = result.tasks
         print(

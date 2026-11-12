@@ -1,0 +1,18 @@
+# Packaged default for the `smoke` question set: one end-to-end call that
+# proves a backend answers. A rail copy at thinkweave/questions/smoke.toml
+# replaces this file whole. Slots: {prompt}, {candidate}.
+state = """
+A user working with a personal knowledge vault sent this prompt:
+{prompt}
+
+Candidate note from the vault:
+{candidate}
+"""
+
+[questions.relevance]
+type = "choice"
+instructions = "Would showing the candidate note help answer the user's prompt?"
+
+[questions.relevance.criteria]
+relevant = "The note bears directly on what the prompt asks."
+irrelevant = "The note does not bear on what the prompt asks."

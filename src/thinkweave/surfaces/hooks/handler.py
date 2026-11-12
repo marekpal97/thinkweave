@@ -730,7 +730,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
             cfg, session_id, hook_input,
             deadline=_hook_budget_remaining("UserPromptSubmit", started),
         )
-        _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
+        bound = _bind_dispatched_session(cfg, session_id, prompt_text, now, hook_input)
 
         # R2 — prompt-time retrieval enrichment. Bounded, deduped against the
         # live buffer, hard-capped, and held inside what the harness still
@@ -739,6 +739,7 @@ def _handle_user_prompt_submit(hook_input: dict) -> None:
         block = _prompt_time_enrichment(
             cfg, session_id, prompt_text, now, delivery_id=delivery_id,
             deadline=_hook_budget_remaining("UserPromptSubmit", started),
+            task=_open_task_title(cfg, session_id, bound),
         )
 
         # Feedback classification does NOT happen here (#101): hooks capture,
@@ -818,31 +819,44 @@ def _record_base(cfg, session_id: str, now: str, cwd: str, *, model: str = "") -
 
 def _bind_dispatched_session(
     cfg, session_id: str, prompt_text: str, now: str, hook_input: dict
-) -> None:
-    """A prompt naming a task id binds this session's transcript to it."""
+) -> list[str]:
+    """A prompt naming a task id binds this session's transcript to it;
+    returns the ids it bound."""
     from thinkweave.operations import tasks
 
-    for task_id in tasks.bind_session(
+    bound = tasks.bind_session(
         cfg,
         prompt_text,
         harness=_harness_id(),
         session_key=session_id,
         transcript_path=str(hook_input.get("transcript_path") or ""),
         since=now,
-    ):
+    )
+    for task_id in bound:
         _log_info("user_prompt_submit", f"bound {task_id} to session {session_id}")
+    return bound
+
+
+def _open_task_title(cfg, session_id: str, bound: list[str]) -> str:
+    """The title of the task this prompt bound, else of the latest task the
+    session opened and has not closed; ``""`` when there is none."""
+    from thinkweave.operations.tasks import Register, TaskStore
+
+    ids = bound or Register(cfg, session_id, [buffer_path(cfg.weave_dir, session_id)]).unclosed()
+    task = TaskStore(cfg).get(ids[-1]) if ids else None
+    return task.title if task else ""
 
 
 def _prompt_time_enrichment(
     cfg, session_id: str, prompt_text: str, now: str, *, delivery_id: str = "",
-    deadline: float | None = None,
+    deadline: float | None = None, task: str = "",
 ) -> str | None:
     """Build the R2 enrichment block and record the outcome to the buffer.
 
     Returns the block to inject, or ``None`` to no-op. Self-contained: on any
     error it logs and returns ``None`` so the caller emits a plain response.
-    ``build_enrichment`` is pure (read-only) — this function owns every
-    buffer write-back on its behalf:
+    ``build_enrichment`` writes only the gate's verdicts — this function owns
+    every other buffer write-back on its behalf:
 
     - On a fresh block: a ``retrieval`` event tagged with ``PROMPT_TIME_TOOL``
       so (1) the next turn's dedup sees these ids and (2) the indexer
@@ -854,23 +868,40 @@ def _prompt_time_enrichment(
       misses is visible instead of silently re-paying the embedding deadline
       every turn. When the hook budget left too little to attempt the arm
       at all, the miss row says ``skipped: "budget"`` (#353).
+    - On a prompt-gate miss: a ``verdict_miss`` event naming the reason;
+      the ungated fallback it serves is marked ``fallback`` so it does not
+      reset the adaptive skip's miss streak.
 
-    Both rows carry ``bytes`` (chars injected this turn) and ``cap`` (the
-    per-turn ceiling, ``max_injected_chars_per_turn``), so the serving
-    chain reads the same way at prompt time as at startup.
+    The ``retrieval`` and ``prompt_time_miss`` rows carry ``bytes`` (chars
+    injected this turn) and ``cap`` (the per-turn ceiling,
+    ``max_injected_chars_per_turn``), so the serving chain reads the same
+    way at prompt time as at startup.
     """
     try:
         from thinkweave.operations.prompt_time_retrieval import (
             MIN_DEADLINE_SECONDS,
+            PROMPT_GATE,
             PROMPT_TIME_MISS,
             PROMPT_TIME_TOOL,
             build_enrichment,
         )
+        from thinkweave.operations.verdicts import record_miss
 
         cap = cfg.retrieval_prompt_time.max_injected_chars_per_turn
-        block, served_ids, missed = build_enrichment(
-            cfg, session_id, prompt_text, deadline=deadline
+        block, served_ids, missed, verdict_miss = build_enrichment(
+            cfg, session_id, prompt_text, deadline=deadline, task=task
         )
+
+        if verdict_miss:
+            record_miss(
+                cfg, PROMPT_GATE, verdict_miss, session_id=session_id,
+                source="prompttime", harness=_harness_id(),
+                delivery_id=f"{delivery_id}:decision-miss" if delivery_id else "",
+            )
+            _log_info(
+                "prompt_time_enrichment",
+                f"prompt gate miss for session {session_id}: {verdict_miss}",
+            )
 
         if missed:
             miss = {
@@ -904,6 +935,8 @@ def _prompt_time_enrichment(
             "bytes": len(block),
             "cap": cap,
         }
+        if verdict_miss:
+            served["fallback"] = True
         if delivery_id:
             served["delivery_id"] = f"{delivery_id}:prompt-time-retrieval"
         _buffer_event(cfg.weave_dir, session_id, served)
@@ -1807,6 +1840,13 @@ def _handle_stop(hook_input: dict) -> None:
 
         source_session = note.frontmatter.get("source_session", session_id)
 
+        # Before the fold or the archive below, so either carries it.
+        try:
+            _record_turn_end(cfg, source_session, session_path.parent, hook_input)
+        except Exception as e:
+            _log_error("stop/turn_end", e)
+            _pending_messages.append(_report_failure("stop/turn_end", hook_input, e))
+
         # Already processed → fold, don't rewrite. Both harnesses fire Stop
         # at the end of EVERY turn, so this branch is the common case from
         # turn 2 on; see _fold_processed_session for what it keeps current.
@@ -1912,6 +1952,18 @@ def _handle_stop(hook_input: dict) -> None:
     except Exception as e:
         _log_error("stop", e)
         _output(system_message=_report_failure("stop", hook_input, e))
+
+
+def _record_turn_end(cfg, source_session: str, folder: Path, hook_input: dict) -> None:
+    """Close the turn this Stop ends with a ``turn_end`` event in the live
+    buffer; a turn already closed gets none."""
+    from thinkweave.operations.verdicts import Ledger
+
+    key = _firing_profile().final_message_key
+    message = str(hook_input.get(key) or "") if key else ""
+    end = Ledger.read(cfg, source_session, folder).turn_end(message)
+    if end:
+        _buffer_event(cfg.weave_dir, source_session, end.as_event())
 
 
 #: The verification claims the Stop nudge looks for in the final assistant

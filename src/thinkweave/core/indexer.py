@@ -18,6 +18,7 @@ from itertools import combinations
 from pathlib import Path
 
 from thinkweave.core._utils import as_list
+from thinkweave.core.buffer import verdicts_log_path
 from thinkweave.core.config import Config, load_config
 from thinkweave.core.schemas import LINKABLE_EDGE_TYPES
 from thinkweave.synthesis.landing import (
@@ -53,6 +54,29 @@ def _startup_source(harness_id: str) -> str:
 
     factory = PROFILES.get(harness_id)
     return factory().context_served_source if factory else "startup"
+
+
+def served_source(ev: dict) -> str:
+    """``context_served.source`` for a ``startup`` or ``retrieval`` event;
+    ``""`` for any other event.
+
+    Retrieval events carry their source by their tool sentinel: system-pushed
+    enrichment (prompt-time R2, or issue-loop claim-time priming — the writer
+    is LOOP_PRIME_TOOL in the devloop package's trajectory/prime.py) each gets
+    its own source, so agent-pulled ``onthefly`` stays a clean signal for the
+    RLVR export.
+    """
+    etype = ev.get("type", "")
+    if etype == "startup":
+        return _startup_source(ev.get("surface", ""))
+    if etype != "retrieval":
+        return ""
+    tool = ev.get("tool")
+    if tool == "prompt_time_retrieval":
+        return "prompttime"
+    if tool == "loop_prime":
+        return "loop-prime"
+    return "onthefly"
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS notes (
@@ -238,6 +262,35 @@ CREATE TABLE IF NOT EXISTS prompt_concepts (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prc_concept ON prompt_concepts(concept);
+
+-- System 1 verdicts projected from ``verdict`` events: a session's archived
+-- retrieval_log.jsonl (``session_id`` = the vault session note id, as in
+-- context_served) and the vault-level verdicts.jsonl (``session_id`` NULL).
+-- One row per answered question. ``phase`` is 'ex_ante' (judged before the
+-- action) or 'ex_post' (judged afterwards); a subject judged only ex post has
+-- no ex_ante row. ``probs`` is JSON; ``value`` is the noul number or the
+-- chosen option. Rebuildable via ``weave index --full`` — the JSONL stays truth.
+CREATE TABLE IF NOT EXISTS verdicts (
+    question_set TEXT NOT NULL,
+    session_id TEXT,
+    turn       INTEGER,
+    subject_id TEXT,
+    phase      TEXT NOT NULL CHECK(phase IN ('ex_ante', 'ex_post')),
+    question   TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    probs      TEXT NOT NULL,
+    value,
+    action     TEXT,
+    source     TEXT,
+    model      TEXT,
+    backend    TEXT,
+    latency_ms INTEGER,
+    cost       REAL,
+    ts         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_verdicts_subject ON verdicts(session_id, subject_id);
+CREATE INDEX IF NOT EXISTS idx_verdicts_question_set ON verdicts(question_set, phase);
 """
 
 FTS_SCHEMA_SQL = """
@@ -347,6 +400,13 @@ class Indexer:
         return self._db
 
     def _init_schema(self) -> None:
+        # A ``verdicts`` table whose key column predates the name
+        # ``question_set`` cannot take SCHEMA_SQL's index. Its rows came from
+        # events under a retired type that nothing projects any more, so the
+        # table is dropped and SCHEMA_SQL recreates it empty.
+        verdict_cols = {r[1] for r in self.db.execute("PRAGMA table_info(verdicts)")}
+        if verdict_cols and "question_set" not in verdict_cols:
+            self.db.execute("DROP TABLE verdicts")
         self.db.executescript(SCHEMA_SQL)
         # FTS5 tokenizer migration (A4). Earlier vaults created `notes_fts`
         # with the default tokenizer (`unicode61` only), which splits dash-
@@ -484,6 +544,7 @@ class Indexer:
             self.db.execute("DELETE FROM hub_log_entries")
             self.db.execute("DELETE FROM prompts")
             self.db.execute("DELETE FROM prompt_concepts")
+            self.db.execute("DELETE FROM verdicts")
             self.db.execute("DELETE FROM notes")
             self._rebuild_fts()
 
@@ -597,6 +658,7 @@ class Indexer:
         else:
             self._rebuild_context_served(only_ids=changed_ids)
             self._rebuild_prompts(only_ids=changed_ids)
+        self.project_vault_verdicts()
 
         self.db.commit()
         return stats
@@ -1489,6 +1551,7 @@ class Indexer:
         Returns the number of rows upserted; 0 if the log file is missing.
         Tolerates malformed lines line-by-line.
         """
+        self.db.execute("DELETE FROM verdicts WHERE session_id = ?", (session_id,))
         if not log_path.exists():
             return 0
 
@@ -1503,24 +1566,11 @@ class Indexer:
                 except json.JSONDecodeError:
                     continue
                 etype = ev.get("type", "")
-                if etype == "startup":
-                    src = _startup_source(ev.get("surface", ""))
-                elif etype == "retrieval":
-                    # Retrieval events carry a source distinction by their tool
-                    # sentinel: system-pushed enrichment (prompt-time R2, or
-                    # issue-loop claim-time priming #57 — the writer is
-                    # LOOP_PRIME_TOOL in the devloop package's
-                    # trajectory/prime.py, which lives in funloops since #151)
-                    # each gets its own source so agent-pulled 'onthefly' stays
-                    # a clean signal for the RLVR export.
-                    tool = ev.get("tool")
-                    if tool == "prompt_time_retrieval":
-                        src = "prompttime"
-                    elif tool == "loop_prime":
-                        src = "loop-prime"
-                    else:
-                        src = "onthefly"
-                else:
+                if etype == "verdict":
+                    self._insert_verdicts(ev, session_id)
+                    continue
+                src = served_source(ev)
+                if not src:
                     continue
                 ts = ev.get("ts", "")
                 returned_ids = ev.get("returned_ids", []) or []
@@ -1542,6 +1592,49 @@ class Indexer:
                     )
                     upserted += 1
         return upserted
+
+    def project_vault_verdicts(self) -> int:
+        """Re-project the vault-level ``verdicts.jsonl`` into ``verdicts``.
+
+        Replaces every session-less row, so it is idempotent. Returns the
+        number of verdict events projected.
+        """
+        self.db.execute("DELETE FROM verdicts WHERE session_id IS NULL")
+        path = verdicts_log_path(self.config.vault_root)
+        if not path.exists():
+            return 0
+        projected = 0
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(ev, dict) and ev.get("type") == "verdict":
+                self._insert_verdicts(ev, None)
+                projected += 1
+        self.db.commit()
+        return projected
+
+    def _insert_verdicts(self, ev: dict, session_id: str | None) -> None:
+        """One ``verdicts`` row per answer in a ``verdict`` event; an answer's
+        own ``subject_id`` and ``action`` override the event's."""
+        for answer in ev.get("answers") or []:
+            self.db.execute(
+                "INSERT INTO verdicts (question_set, session_id, turn, subject_id, phase, "
+                "question, kind, probs, value, action, source, model, backend, "
+                "latency_ms, cost, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    ev.get("question_set", ""), session_id, ev.get("turn"),
+                    answer.get("subject_id") or ev.get("subject_id") or None,
+                    ev.get("phase", ""),
+                    answer.get("question", ""), answer.get("kind", ""),
+                    json.dumps(answer.get("probs") or {}), answer.get("value"),
+                    answer.get("action") or ev.get("action") or None,
+                    ev.get("source") or None,
+                    ev.get("model"), ev.get("backend"), ev.get("latency_ms"),
+                    ev.get("cost"), ev.get("ts", ""),
+                ),
+            )
 
     # ------------------------------------------------------------------
     # Prompt projection: events.jsonl → prompts / prompt_concepts

@@ -374,6 +374,15 @@ class TestDegradations:
                     for d in profile.degradations
                 ), f"{profile.id} maps {event} to nothing without documenting it"
 
+    def test_a_stop_without_a_final_message_is_documented(self, profile):
+        """Claude Code and Codex hand Stop the final answer; a profile naming
+        no source says out loud that its ``turn_end`` carries none."""
+        expected = {"claude-code": "last_assistant_message",
+                    "codex": "last_assistant_message"}
+        assert profile.final_message_key == expected.get(profile.id, "")
+        if not profile.final_message_key:
+            assert any("turn_end" in d.capability for d in profile.degradations)
+
     def test_rendering_carries_every_note(self, profile):
         rendered = harness_docs.render_degradations(profile)
         if not profile.degradations:
@@ -954,6 +963,14 @@ class TestHookBudgets:
         block = re.search(r"BUDGET_MS = \{(.*?)\}", source, re.S).group(1)
         literal = {m.group(1): int(m.group(2)) for m in re.finditer(r"(\w+): (\d+)", block)}
         assert profile.hook_budget_ms == literal
+
+    @pytest.mark.parametrize("name", ["pi", "opencode"])
+    def test_prompt_submit_budget_fits_the_gate(self, name):
+        """Six seconds holds the similarity arm and the prompt gate's call."""
+        profile = harness.lookup(name)
+        source = (self.REPO / profile.hook_extension_source).read_text(encoding="utf-8")
+        assert profile.hook_budget_ms["UserPromptSubmit"] == 6000
+        assert re.search(r"BUDGET_MS = \{[^}]*UserPromptSubmit: 6000,", source, re.S)
 
     def test_plugin_budget_matches_hooks_json(self):
         hooks = json.loads((self.REPO / "hooks" / "hooks.json").read_text(encoding="utf-8"))

@@ -19,6 +19,14 @@ Schema::
       provider: openai            # openai | sentence_transformer | litellm
       model: text-embedding-3-small
 
+    decisions:                    # System 1 decision backends (systemone wire format)
+      default_backend: openrouter
+      backends:
+        openrouter:
+          base_url: https://openrouter.ai/api/alpha/decisions
+          key_provider: openrouter   # api_keys provider name
+          models: [typesafe/jev-1.14]  # the first is the default
+
     overrides:
       hubs_run:        {model: gpt-5}
       hubs_link:       {}
@@ -63,6 +71,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "embeddings": {
         "provider": "openai",
         "model": "text-embedding-3-small",
+    },
+    "decisions": {
+        "default_backend": "openrouter",
+        "backends": {
+            "openrouter": {
+                "base_url": "https://openrouter.ai/api/alpha/decisions",
+                "key_provider": "openrouter",
+                "models": ["typesafe/jev-1.14"],
+            },
+        },
     },
     "overrides": {},
 }
@@ -136,6 +154,19 @@ def embeddings_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "provider": block.get("provider") or DEFAULT_CONFIG["embeddings"]["provider"],
         "model": block.get("model") or DEFAULT_CONFIG["embeddings"]["model"],
+    }
+
+
+def decisions_config(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Return the effective ``decisions.{default_backend, backends}`` block."""
+    block = cfg.get("decisions") or {}
+    if not isinstance(block, dict):
+        block = {}
+    backends = block.get("backends")
+    return {
+        "default_backend": block.get("default_backend")
+        or DEFAULT_CONFIG["decisions"]["default_backend"],
+        "backends": backends if isinstance(backends, dict) else {},
     }
 
 

@@ -883,7 +883,10 @@ class TestMeasuredHeadlessReplay:
         ]
         # The replay's cwd is outside any repo, so no base row is recorded;
         # the manifest the first prompt stamps still is.
-        assert [e.get("type") or e.get("tool") for e in events] == ["prompt", "manifest", "Bash"]
+        assert [e.get("type") or e.get("tool") for e in events] == [
+            "prompt", "manifest", "Bash", "turn_end",
+        ]
+        assert "waited-ok" in events[-1]["message"]
         retrievals = [
             json.loads(line)
             for line in (session_dir / "retrieval_log.jsonl")

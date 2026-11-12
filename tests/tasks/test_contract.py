@@ -393,3 +393,31 @@ def test_a_round_manifest_carries_the_effective_hook_values():
     bad = {**stamp, "effective": {**stamp["effective"], "nudge": "yes"}}
     with pytest.raises(ValueError, match=r"manifest\.effective\.nudge"):
         Round.from_dict({"manifest": bad}, grain="work")
+
+
+def test_a_round_manifest_names_the_decision_sites_in_force(tmp_path):
+    """The manifest's ``verdicts`` key: ``collect`` lists each System 1
+    question set turned on with the backend, model and ``accept`` its
+    knobs name, a question set that is off is absent, and the closed ``_MANIFEST``
+    shape accepts the rows and refuses a stray field by name."""
+    from thinkweave.core import manifest
+    from thinkweave.core.config import Config, QuestionSet
+    from thinkweave.core.task_contract import Round
+
+    cfg = Config(vault_root=tmp_path)
+    assert "verdicts" not in manifest.collect(cfg, "claude-code")
+
+    cfg.verdicts.question_set["prompt_gate"] = QuestionSet(
+        enabled=True, backend="openrouter", model="typesafe/jev-1.14", accept=0.6
+    )
+    cfg.verdicts.question_set["ex_post"] = QuestionSet(model="typesafe/jev-1.14")
+    stamp = manifest.collect(cfg, "claude-code")
+    assert stamp["verdicts"] == [{
+        "question_set": "prompt_gate", "backend": "openrouter",
+        "model": "typesafe/jev-1.14", "accept": 0.6,
+    }]
+    assert Round.from_dict({"manifest": stamp}, grain="work").manifest == stamp
+
+    stray = {**stamp, "verdicts": [{**stamp["verdicts"][0], "pool": 30}]}
+    with pytest.raises(ValueError, match=r"manifest\.verdicts\[0\]: unknown field 'pool'"):
+        Round.from_dict({"manifest": stray}, grain="work")

@@ -21,6 +21,7 @@ from thinkweave.core.config import Config, Hooks, _apply_knobs, _check_rail_keys
 from thinkweave.core.harness import CANONICAL_EVENTS, lookup
 from thinkweave.core.task_contract import Round
 from thinkweave.operations import tasks
+from thinkweave.operations.prompt_time_retrieval import Enrichment
 from thinkweave.surfaces.hooks import handler
 
 SESSION = "22222222-3333-4444-8555-666677778888"
@@ -127,7 +128,7 @@ class TestBudget:
         cfg.hooks.budget_ms = {"UserPromptSubmit": 40_000}
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **kw: (None, [], False),
+            lambda *a, **kw: Enrichment(None, [], False),
         )
         _prompt(monkeypatch, tmp_path, "a prompt long enough to enrich")
         refusals = [ln for ln in _log(cfg).splitlines() if "above the harness literal" in ln]
@@ -141,7 +142,7 @@ class TestBudget:
         block = "## Related\n- (`n-aaaa1111`) a note\n"
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **kw: (block, ["n-aaaa1111"], False),
+            lambda *a, **kw: Enrichment(block, ["n-aaaa1111"], False),
         )
         reply = _prompt(monkeypatch, tmp_path, "a prompt long enough to enrich")
         assert reply["hookSpecificOutput"]["additionalContext"] == block
@@ -373,7 +374,7 @@ class TestMidSentenceSkill:
         sends them; the round counts ``Skill`` once."""
         monkeypatch.setattr(
             "thinkweave.operations.prompt_time_retrieval.build_enrichment",
-            lambda *a, **kw: (None, [], False),
+            lambda *a, **kw: Enrichment(None, [], False),
         )
         _prompt(monkeypatch, tmp_path,
                 "this sounds good, /wrap and we'll pick it up next session")

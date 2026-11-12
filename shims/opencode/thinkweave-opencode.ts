@@ -74,7 +74,7 @@ const CONTEXT_MARKER = "[thinkweave session context]";
 // python, and the event — 2026-10-12: the session's commit — never landed.
 const BUDGET_MS = {
   SessionStart: 5000,
-  UserPromptSubmit: 2500,
+  UserPromptSubmit: 6000,
   PostToolUse: 10000,
   Stop: 6000,
 } as const;

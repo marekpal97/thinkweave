@@ -13,6 +13,7 @@ import sys
 
 from thinkweave.core import harness, mcp_config
 from thinkweave.surfaces.cli.concepts import cmd_concepts
+from thinkweave.surfaces.cli.decide import cmd_decide
 from thinkweave.surfaces.cli.drain import cmd_discover, cmd_drain
 from thinkweave.surfaces.cli.dream import cmd_dream
 from thinkweave.surfaces.cli.flows import cmd_flow
@@ -116,6 +117,7 @@ _DISPATCH = {
     "skill": cmd_skill,
     "sources": cmd_sources,
     "project": cmd_project,
+    "decide": cmd_decide,
     # ── Cron & orchestration ──────────────────────────────────────────
     # Invoked by cron flows and headless skill orchestrators (/dream,
     # /drain, /tighten, …) — pipeline verbs plus the write

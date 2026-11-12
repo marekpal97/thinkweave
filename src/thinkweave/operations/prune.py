@@ -16,6 +16,7 @@ performs destructive ``shutil.rmtree`` — keep those separate.
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from dataclasses import dataclass
@@ -23,6 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
+from thinkweave.core.buffer import TURN_END
 from thinkweave.core.config import Config, load_config
 from thinkweave.core.vault import parse_frontmatter
 
@@ -98,7 +100,7 @@ def is_orphan(
 
         # Condition 3: events.jsonl missing or too small
         events_file = session_dir / "events.jsonl"
-        if events_file.exists() and events_file.stat().st_size >= EVENTS_MIN_BYTES:
+        if events_file.exists() and _work_bytes(events_file) >= EVENTS_MIN_BYTES:
             return False
 
         # Parse frontmatter once for conditions 4-7
@@ -139,6 +141,23 @@ def is_orphan(
     except OSError:
         # Permission error, stat failure — fall back to safe (not orphan)
         return False
+
+
+def _work_bytes(events_file: Path) -> int:
+    """Bytes of ``events.jsonl`` that record work: every line but ``turn_end``,
+    whose final message gives even a one-prompt session a sizeable file."""
+    size = events_file.stat().st_size
+    if size < EVENTS_MIN_BYTES:
+        return size
+    kept = 0
+    for line in events_file.read_bytes().splitlines(keepends=True):
+        try:
+            if json.loads(line).get("type") == TURN_END:
+                continue
+        except (ValueError, AttributeError):
+            pass
+        kept += len(line)
+    return kept
 
 
 def find_orphans(
