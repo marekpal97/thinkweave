@@ -531,7 +531,7 @@ class EffectiveHooks:
     refused: tuple[str, ...] = ()
 
 
-_VERDICT_EVENTS = ("UserPromptSubmit", "wrap")
+_VERDICT_EVENTS = ("UserPromptSubmit", "weave_call", "wrap")
 
 
 @dataclass
@@ -543,14 +543,15 @@ class QuestionSet:
     verdict must reach, ``pool_size`` the candidates scored per call, and
     ``deadline_ms`` how long the question set waits for the backend. The prompt gate
     reads its question set at UserPromptSubmit and the ex-post judge at wrap; the
-    pool and the deadline bound the prompt gate only.
+    acquisition dedup and the concept guard read theirs inside ``weave_*`` calls
+    and at wrap. The deadline bounds the prompt gate only.
     """
 
     enabled: bool = knob(False, read_at=_VERDICT_EVENTS, parse=bool)
     backend: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
     model: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
     accept: float = knob(0.7, read_at=_VERDICT_EVENTS, parse=float)
-    pool_size: int = knob(30, read_at="UserPromptSubmit", parse=int)
+    pool_size: int = knob(30, read_at=_VERDICT_EVENTS, parse=int)
     deadline_ms: int = knob(1500, read_at="UserPromptSubmit", parse=int)
 
 

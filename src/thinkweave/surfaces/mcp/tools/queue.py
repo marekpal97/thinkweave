@@ -67,8 +67,9 @@ def tool_schemas() -> list:
 def handle(cfg: Config, args: dict):
     from mcp.types import TextContent
 
-    from thinkweave.acquisition.sources import all_specs, load_user_config
+    from thinkweave.acquisition.sources import all_specs
     from thinkweave.acquisition.sources.queue import Queue
+    from thinkweave.operations.queue import enqueue, enqueue_line
 
     action = args.get("action", "")
     source_type = args.get("source_type", "") or ""
@@ -120,17 +121,7 @@ def handle(cfg: Config, args: dict):
         item = args.get("item") or {}
         if not isinstance(item, dict):
             return [TextContent(type="text", text="enqueue requires item dict")]
-        sources_cfg = load_user_config(cfg.vault_root).get("sources", {})
-        keys = sources_cfg.get(source_type, {}).get("dedup_keys") or []
-        q = Queue.for_source_type(source_type, cfg.vault_root)
-        conflict = q.dedup_check(item, keys) if keys else None
-        if conflict:
-            return [TextContent(
-                type="text",
-                text=f"duplicate of {conflict}; not enqueued",
-            )]
-        new_id = q.enqueue(item)
-        return [TextContent(type="text", text=f"enqueued {new_id}")]
+        return [TextContent(type="text", text=enqueue_line(enqueue(cfg, source_type, item)))]
 
     if action == "archive":
         if not source_type:

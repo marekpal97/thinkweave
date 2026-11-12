@@ -129,18 +129,24 @@ def create_note(
     in ``extra_frontmatter`` are split through the merged ontology —
     canonical terms stay in ``concepts:``, unrecognised ones get routed to
     ``proposed_concepts:`` for later promotion via ``/weave-resolve-concepts``.
+    The concept guard judges each proposed term on the way and records its
+    rewrites and hints on the note.
     Both surfaces (CLI ``weave add`` and MCP ``weave_create``) get this gate
     uniformly; ``weave_extract`` runs its own equivalent split before reaching
     this function.
     """
+    from thinkweave.operations.verdicts import ConceptGuard
     from thinkweave.synthesis.concepts import split_concepts_by_ontology
 
     fm = dict(extra_frontmatter) if extra_frontmatter else {}
     if "concepts" in fm or "proposed_concepts" in fm:
+        guard = ConceptGuard(cfg)
         canonical, proposed = split_concepts_by_ontology(
             fm.get("concepts"),
             proposed=fm.get("proposed_concepts"),
+            resolve=guard.resolve,
         )
+        fm.update(guard.record())
         if canonical:
             fm["concepts"] = canonical
         else:

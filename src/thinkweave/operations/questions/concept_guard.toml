@@ -1,0 +1,20 @@
+# Packaged default for the `concept_guard` question set: when a note carries a
+# concept term the ontology does not list, decide whether the term is a
+# synonym of a canonical concept. A rail copy at
+# thinkweave/questions/concept_guard.toml replaces this file whole.
+# Slots: {subject}; per canonical concept, {candidate}.
+state = """
+A user's knowledge vault tags notes with concepts from a fixed ontology. A new
+note carries this term, which the ontology does not list:
+
+{subject}
+"""
+
+[questions.duplicate]
+type = "choice"
+instructions = """Does the term mean the same thing as one of these canonical \
+concepts? Choose that concept, or `new` when it names something else."""
+option = "The term is a synonym of the canonical concept `{candidate}`."
+
+[questions.duplicate.criteria]
+new = "The term names a concept none of the listed ones covers."

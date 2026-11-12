@@ -5,7 +5,9 @@ A question set is a named group of questions with one state text:
 asks a decision provider, :func:`record_verdict` records the answer as a
 ``verdict`` event that the indexer projects into the ``verdicts`` table,
 :func:`run_question_set` does both, and :func:`record_miss` records a call that gave
-no verdict.
+no verdict. :func:`judge_duplicate` is the one duplicate judgment: a ``choice``
+over a subject's nearest neighbours plus ``new``, asked by the acquisition
+dedup at enqueue and by the concept guard behind the ontology gate.
 
 A session's :class:`Ledger` is the one reader of its event archive and live
 buffer. The ex-post judge reads it: :func:`ex_post_pass` asks, per closed
@@ -39,6 +41,7 @@ from thinkweave.core.decision_provider import (
     Question,
     build_from_vault,
 )
+from thinkweave.synthesis.concepts import suggest_similar
 
 PHASES = ("ex_ante", "ex_post")
 
@@ -55,9 +58,20 @@ EX_POST = "ex_post"
 #: The question set ``weave decide smoke`` asks: one end-to-end call.
 SMOKE = "smoke"
 
+#: The question set that judges, at enqueue, whether a concept-grain item
+#: duplicates a source already in the vault.
+ACQUISITION_DEDUP = "acquisition_dedup"
+
+#: The question set that judges whether a term the ontology gate shunts is a
+#: synonym of a canonical concept.
+CONCEPT_GUARD = "concept_guard"
+
 #: Every question set, each with a text under ``questions/``. The
 #: ``[verdicts.<question_set>]`` knob tables are keyed by these names.
-QUESTION_SETS = (PROMPT_GATE, EX_POST, SMOKE)
+QUESTION_SETS = (PROMPT_GATE, EX_POST, SMOKE, ACQUISITION_DEDUP, CONCEPT_GUARD)
+
+#: The option of a duplicate judgment that names no neighbour.
+NEW = "new"
 
 #: Characters of the final assistant message a ``turn_end`` event keeps.
 FINAL_MESSAGE_CHARS = 2000
@@ -182,6 +196,93 @@ def record_miss(
     )
 
 
+def judge_duplicate(
+    cfg: Config,
+    subject: str,
+    neighbours: dict[str, str],
+    question_set: str,
+    *,
+    subject_id: str = "",
+    provider: DecisionProvider | None = None,
+) -> "Duplicate | None":
+    """Ask ``question_set`` which of ``neighbours`` (id to text, nearest
+    first) ``subject`` duplicates, if any, and record the verdict.
+
+    The verdict row's subject is ``subject_id``, else ``subject`` itself.
+    Returns ``None`` when nothing was judged: the question set is off, there
+    is no neighbour, or the call failed, which is logged as a ``verdict_miss``.
+    """
+    policy = cfg.question_set(question_set)
+    if not policy.enabled or not neighbours:
+        return None
+    try:
+        decision = ask_question_set(
+            cfg, question_set, {"subject": subject},
+            subjects={n: {"candidate": text} for n, text in neighbours.items()},
+            provider=provider,
+        )
+    except Exception as exc:
+        record_miss(cfg, question_set, f"{type(exc).__name__}: {exc}")
+        return None
+    answer = decision.answers[0]
+    of = "" if answer.value == NEW else str(answer.value)
+    probability = float(answer.probs.get(answer.value, 0.0))
+    verdict = Duplicate(of, probability, bool(of) and probability >= policy.accept)
+    record_verdict(
+        cfg, question_set, decision, subject_id=subject_id or subject,
+        action="duplicate" if verdict.confident else "suggested" if of else "none",
+    )
+    return verdict
+
+
+@dataclass(frozen=True)
+class Duplicate:
+    """One duplicate judgment: the neighbour the subject duplicates (empty
+    for none), the probability behind that choice, and whether it names a
+    neighbour at or above the question set's ``accept``."""
+
+    of: str
+    probability: float
+    confident: bool
+
+
+@dataclass
+class ConceptGuard:
+    """The concept guard over one note's concepts.
+
+    Judges each term bound for ``proposed_concepts`` against the canonical
+    concepts near it: a confident synonym becomes the canonical term, a
+    likely one stays proposed with the canonical term as a hint.
+    """
+
+    cfg: Config
+    provider: DecisionProvider | None = None
+    synonyms: dict[str, str] = field(default_factory=dict)
+    hints: dict[str, str] = field(default_factory=dict)
+
+    def resolve(self, term: str, ontology_keep: set[str]) -> str:
+        """The canonical concept ``term`` confidently duplicates, else ``term``."""
+        policy = self.cfg.question_set(CONCEPT_GUARD)
+        if not policy.enabled:
+            return term
+        by_length = sorted(ontology_keep, key=lambda c: (abs(len(c) - len(term)), c))
+        near = suggest_similar(term, by_length, policy.pool_size)
+        verdict = judge_duplicate(
+            self.cfg, term, {c: c for c in near}, CONCEPT_GUARD, provider=self.provider
+        )
+        if verdict is None or not verdict.of:
+            return term
+        (self.synonyms if verdict.confident else self.hints)[term] = verdict.of
+        return verdict.of if verdict.confident else term
+
+    def record(self) -> dict[str, dict[str, str]]:
+        """The frontmatter that records the guard's work on the note:
+        ``concept_synonyms`` maps each rewritten term to the canonical concept
+        it became, ``concept_hints`` each proposed term to its likely one."""
+        fields = {"concept_synonyms": self.synonyms, "concept_hints": self.hints}
+        return {key: dict(value) for key, value in fields.items() if value}
+
+
 @dataclass(frozen=True)
 class QuestionSetText:
     """A question set's state-assembly text: a state template and its question templates."""
@@ -203,18 +304,27 @@ class QuestionSetText:
         """Fill every template with ``slots`` via ``str.format``.
 
         A question with ``per_subject = true`` is asked once per entry of
-        ``subjects``, its template filled with that subject's slots too.
+        ``subjects``, its template filled with that subject's slots too. A
+        ``choice`` question with an ``option`` template offers one option per
+        entry of ``subjects``, keyed by the subject id, ahead of its ``criteria``.
         """
         questions = []
         for name, spec in self.questions.items():
             asked = (subjects or {}).items() if spec.get("per_subject") else [("", {})]
             for subject, own in asked:
                 filled = {**slots, **own}
+                criteria = {k: v.format(**filled) for k, v in spec.get("criteria", {}).items()}
+                if "option" in spec:
+                    offered = {
+                        s: spec["option"].format(**{**slots, **o})
+                        for s, o in (subjects or {}).items()
+                    }
+                    criteria = {**offered, **criteria}
                 questions.append(Question(
                     name=name,
                     kind=spec["type"],
                     instructions=spec["instructions"].format(**filled),
-                    criteria={k: v.format(**filled) for k, v in spec.get("criteria", {}).items()},
+                    criteria=criteria,
                     subject=subject,
                 ))
         return self.state.format(**slots), questions

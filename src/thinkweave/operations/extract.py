@@ -36,6 +36,7 @@ from thinkweave.synthesis.concepts import (
     split_concepts_by_ontology,
 )
 from thinkweave.operations import rejudge_queue
+from thinkweave.operations.verdicts import ConceptGuard
 from thinkweave.synthesis.prediction import append_verdict
 
 
@@ -342,12 +343,14 @@ def extract_session(
         title = insight["title"]
         body = insight["body"]
         tags = insight.get("tags", [])
+        guard = ConceptGuard(cfg)
         canonical, proposed = split_concepts_by_ontology(
             insight.get("concepts", []),
             proposed=insight.get("proposed_concepts", []),
             ontology_keep=ontology_keep,
+            resolve=guard.resolve,
         )
-        extra_fm: dict = {"derived_from": [session_id]}
+        extra_fm: dict = {"derived_from": [session_id], **guard.record()}
         if canonical:
             extra_fm["concepts"] = canonical
         if proposed:
@@ -393,11 +396,14 @@ def extract_session(
         }
         if dec.get("file_paths"):
             extra_fm["file_paths"] = dec["file_paths"]
+        guard = ConceptGuard(cfg)
         dec_canonical, dec_proposed = split_concepts_by_ontology(
             dec.get("concepts", []),
             proposed=dec.get("proposed_concepts", []),
             ontology_keep=ontology_keep,
+            resolve=guard.resolve,
         )
+        extra_fm.update(guard.record())
         if dec_canonical:
             extra_fm["concepts"] = dec_canonical
         if dec_proposed:

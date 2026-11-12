@@ -11,6 +11,7 @@ import json
 import logging
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -601,6 +602,7 @@ def split_concepts_by_ontology(
     *,
     proposed: list[str] | None = None,
     ontology_keep: set[str] | None = None,
+    resolve: Callable[[str, set[str]], str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Partition a concept list into (canonical, proposed) by ontology membership.
 
@@ -609,7 +611,9 @@ def split_concepts_by_ontology(
     else — plus anything already in ``proposed`` — flows to ``proposed``.
     Each output list is lowercased, stripped, and deduped (preserving
     order). When ``ontology_keep`` is omitted, the merged ontology is
-    loaded fresh.
+    loaded fresh. ``resolve(term, ontology_keep)`` is the concept guard: a
+    term bound for ``proposed`` that it maps to a canonical concept joins
+    ``canonical`` as that concept.
 
     Used at every concept-write surface (weave_extract, enrich, importers)
     so non-ontology vocabulary can never reach canonical ``concepts:``
@@ -629,6 +633,8 @@ def split_concepts_by_ontology(
         c = raw.lower().strip()
         if not c:
             continue
+        if resolve is not None and c not in ontology_keep:
+            c = resolve(c, ontology_keep)
         if c in ontology_keep:
             if c not in seen_canonical:
                 canonical.append(c)
@@ -642,11 +648,16 @@ def split_concepts_by_ontology(
         if not raw:
             continue
         c = raw.lower().strip()
-        if not c or c in seen_canonical:
+        if not c or c in seen_canonical or c in seen_proposed:
             continue
-        if c not in seen_proposed:
+        judged = resolve is not None and c not in ontology_keep
+        synonym = resolve(c, ontology_keep) if judged else c
+        if synonym == c:
             proposed_out.append(c)
             seen_proposed.add(c)
+        elif synonym not in seen_canonical:
+            canonical.append(synonym)
+            seen_canonical.add(synonym)
 
     return canonical, proposed_out
 
