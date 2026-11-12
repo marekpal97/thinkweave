@@ -39,7 +39,7 @@ from thinkweave.core.config import tracker_project
 from thinkweave.core.events import extract_deterministic, feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
-from thinkweave.core.schemas import NoteType
+from thinkweave.core.schemas import NoteMeta, NoteType
 from thinkweave.core.task_contract import (
     TASK_ID_RE,
     TASK_KIND,
@@ -1402,14 +1402,14 @@ class RoundLog:
         start = _window_start(since)
         try:
             found = []
-            for row in self._task_rows(task_id):
-                task = Task(json.loads(row["frontmatter"]))
+            for note in self._notes("id LIKE ? ORDER BY date, id", task_id or "tsk-%"):
+                task = Task(note.frontmatter)
                 if task.grain == "per-dispatch" and not task_id:
                     continue
                 kept = []
                 for entry in task.rounds:
                     named = self._named(entry.session_ref)
-                    date = str((named or row)["date"] or "")
+                    date = (named or note).date
                     if date < start:
                         continue
                     reading = self._reading(entry, named, date)
@@ -1424,7 +1424,7 @@ class RoundLog:
         finally:
             self.idx.close()
 
-    def _reading(self, entry: Round, named: dict | None, date: str) -> RoundReading:
+    def _reading(self, entry: Round, named: NoteMeta | None, date: str) -> RoundReading:
         gaps: list[str] = []
         ref = entry.session_ref
         rows: list[dict] = []
@@ -1433,12 +1433,12 @@ class RoundLog:
         judged: list = []
         if ref and ref.kind != "agent_id" and named is None:
             gaps.append(f"session {ref.value} is not in the index")
-        elif named and named["type"] == NoteType.SESSION.value:
-            rows = self._chain_rows(named["id"], gaps)
-            served += sorted({r["note_id"] for r in self.chains.served_rows(self.idx, named["id"])})
+        elif named and named.type == NoteType.SESSION:
+            rows = self._chain_rows(named.id, gaps)
+            served += sorted({r["note_id"] for r in self.chains.served_rows(self.idx, named.id)})
             tool_errors += self._dispatch_errors(rows)
         elif named:
-            judged = as_list(named["frontmatter"].get("prediction_history"))
+            judged = as_list(named.frontmatter.get("prediction_history"))
         about = {
             (r.get("ts"), r.get("prompt_ref")): str(r.get("about", ""))
             for r in rows if r.get("type") == "feedback"
@@ -1488,20 +1488,23 @@ class RoundLog:
             gaps=gaps,
         )
 
-    def _task_rows(self, task_id: str) -> list:
-        return self.idx.db.execute(
-            "SELECT date, frontmatter FROM notes WHERE id LIKE ? ORDER BY date, id",
-            (task_id or "tsk-%",),
-        ).fetchall()
+    def _notes(self, where: str, value: str) -> list[NoteMeta]:
+        return [
+            NoteMeta(
+                id=row["id"], type=NoteType(row["type"]), title=row["title"],
+                path=row["path"], date=row["date"] or "",
+                frontmatter=json.loads(row["frontmatter"] or "{}"),
+            )
+            for row in self.idx.db.execute(
+                f"SELECT id, type, title, path, date, frontmatter FROM notes WHERE {where}",
+                (value,),
+            )
+        ]
 
-    def _note(self, where: str, value: str) -> dict | None:
-        row = self.idx.db.execute(
-            f"SELECT id, type, date, path, frontmatter FROM notes WHERE {where} LIMIT 1",
-            (value,),
-        ).fetchone()
-        return {**row, "frontmatter": json.loads(row["frontmatter"] or "{}")} if row else None
+    def _note(self, where: str, value: str) -> NoteMeta | None:
+        return next(iter(self._notes(f"{where} LIMIT 1", value)), None)
 
-    def _named(self, ref: SessionRef | None) -> dict | None:
+    def _named(self, ref: SessionRef | None) -> NoteMeta | None:
         """The indexed note a round's ref names: a session or trajectory
         note by id, or the session note a harness session key was filed as."""
         if ref is None or ref.kind == "agent_id":
@@ -1520,8 +1523,8 @@ class RoundLog:
             note = self._note("id = ?", member)
             if note is None:
                 continue
-            streams.append(archived_events_path((self.cfg.vault_root / note["path"]).parent))
-            if source := note["frontmatter"].get("source_session"):
+            streams.append(archived_events_path((self.cfg.vault_root / note.path).parent))
+            if source := note.frontmatter.get("source_session"):
                 streams.append(buffer_path(self.cfg.weave_dir, str(source)))
         streams = [s for s in streams if s.exists()]
         if not streams:
@@ -1538,7 +1541,7 @@ class RoundLog:
             int(entry.get("tool_errors") or 0)
             for task_id in sorted(opened)
             if (note := self._note("id = ?", task_id))
-            for entry in note["frontmatter"].get("rounds") or []
+            for entry in note.frontmatter.get("rounds") or []
         )
 
     def _decisions(self, declared: dict, gaps: list[str]) -> list[dict]:
@@ -1548,7 +1551,7 @@ class RoundLog:
             if note is None:
                 gaps.append(f"decision {dec_id} is not in the index")
                 continue
-            fm = note["frontmatter"]
+            fm = note.frontmatter
             found.append({
                 "id": dec_id,
                 "status": str(fm.get("status", "")),
