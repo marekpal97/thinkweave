@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
@@ -160,13 +161,23 @@ def _rail(repo: Path) -> dict:
 def _repo_state(directory: str) -> dict | None:
     """``{repo, commit, dirty}`` of the git repo holding ``directory``: its
     root, HEAD, and whether anything is uncommitted. ``None`` outside a repo
-    with a commit."""
+    with a commit. A ``git status`` that fails or times out raises
+    ``RuntimeError``: an unread working tree is never recorded as clean."""
     repo = git_stdout("rev-parse", "--show-toplevel", cwd=directory)
     commit = git_stdout("rev-parse", "HEAD", cwd=directory)
     if not repo or not _FULL_SHA_RE.fullmatch(commit):
         return None
-    dirty = bool(git_stdout("status", "--porcelain", cwd=directory))
-    return {"repo": repo, "commit": commit, "dirty": dirty}
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True,
+            timeout=5, check=True, cwd=directory or None,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"git status failed in {repo}; the round cannot record whether "
+            "it ran on uncommitted text"
+        ) from exc
+    return {"repo": repo, "commit": commit, "dirty": bool(status.strip())}
 
 
 def _readers(cwd: str = "") -> dict:

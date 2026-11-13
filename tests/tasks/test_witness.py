@@ -108,6 +108,18 @@ class TestCollect:
             "repo": str(project), "commit": head, "dirty": True,
         }
 
+    def test_a_failed_git_status_is_announced_never_read_as_clean(self, tmp_path: Path):
+        project = init_repo(tmp_path / "project")
+        (project / "a.txt").write_text("edited, not committed\n", encoding="utf-8")
+        (project / ".git" / "index").write_bytes(b"not an index")
+        cfg = Config(vault_root=tmp_path / "vault")
+
+        with pytest.raises(RuntimeError, match="git status"):
+            manifest.collect(cfg, "pi", cwd=str(project))
+        with pytest.raises(RuntimeError, match="git status"):
+            manifest.collect(Config(vault_root=tmp_path / "vault", rsi_rail=project), "pi",
+                             cwd=str(tmp_path))
+
     def test_outside_a_repo_the_readers_name_no_project(self, tmp_path: Path, monkeypatch):
         cfg = Config(vault_root=tmp_path / "vault")
         assert "project" not in manifest.collect(cfg, "pi", cwd=str(tmp_path))["readers"]

@@ -175,5 +175,5 @@ dev = [
     "pytest>=9.0.2",
     "bump-my-version>=0.28",
     "mcp>=1.0",
-    "devloop @ git+https://github.com/marekpal97/funloops@be4b9fef181c27a1b6d1429969cf3008fed54fd1#subdirectory=packages/devloop",
+    "devloop @ git+https://github.com/marekpal97/funloops@ce0bb987f213a3b4a89f34b3e2ba963386c06ffa#subdirectory=packages/devloop",
 ]

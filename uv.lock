@@ -590,7 +590,7 @@ wheels = [
 [[package]]
 name = "devloop"
 version = "0.1.0"
-source = { git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=be4b9fef181c27a1b6d1429969cf3008fed54fd1#be4b9fef181c27a1b6d1429969cf3008fed54fd1" }
+source = { git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=ce0bb987f213a3b4a89f34b3e2ba963386c06ffa#ce0bb987f213a3b4a89f34b3e2ba963386c06ffa" }
 
 [[package]]
 name = "distro"
@@ -2817,7 +2817,7 @@ provides-extras = ["mcp", "embeddings", "embeddings-local", "embeddings-litellm"
 [package.metadata.requires-dev]
 dev = [
     { name = "bump-my-version", specifier = ">=0.28" },
-    { name = "devloop", git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=be4b9fef181c27a1b6d1429969cf3008fed54fd1" },
+    { name = "devloop", git = "https://github.com/marekpal97/funloops?subdirectory=packages%2Fdevloop&rev=ce0bb987f213a3b4a89f34b3e2ba963386c06ffa" },
     { name = "mcp", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=9.0.2" },
 ]
