@@ -12,13 +12,14 @@ from thinkweave.core.config import Config
 
 def list_by_file(
     cfg: Config,
-    file_path: str,
+    file_path: str | list[str],
     *,
     project: str = "",
     status: str = "",
     limit: int = 50,
 ):
-    """Return decisions whose ``file_paths`` frontmatter touches the given file."""
+    """Return decisions whose ``file_paths`` frontmatter touches the given
+    file, or any of several."""
     from thinkweave.retrieval.search import Search
 
     s = Search(config=cfg)

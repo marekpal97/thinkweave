@@ -218,6 +218,7 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
             file_paths = fm.get("file_paths") or []
             if isinstance(file_paths, str):
                 file_paths = [file_paths]
+            file_paths = [str(f) for f in file_paths if f]
             out.append(
                 {
                     "decision_id": dec_id,
@@ -228,9 +229,9 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
                     "successor_decision_id": successor or None,
                     "source_session": fm.get("source_session", "") or "",
                     "trigger": trigger,
-                    "file_paths": [str(f) for f in file_paths if f],
+                    "file_paths": file_paths,
                     "applied": fm.get("applied") or None,
-                    "path_history": _path_history(idx.db, dec_id, file_paths),
+                    "path_history": _path_history(cfg, dec_id, file_paths),
                 }
             )
     finally:
@@ -248,28 +249,18 @@ class PathHistoryEntry(TypedDict):
     prediction_history: list[dict]
 
 
-def _path_history(db, dec_id: str, file_paths: list) -> list[PathHistoryEntry]:
-    """Every other decision on any of ``file_paths``, oldest first, with its
-    status and verdicts."""
-    paths = [str(f) for f in file_paths if f]
-    if not paths:
-        return []
-    rows = db.execute(
-        "SELECT DISTINCT n.id, n.date, n.frontmatter FROM decision_files df "
-        "JOIN notes n ON n.id = df.decision_id "
-        f"WHERE df.file_path IN ({', '.join('?' * len(paths))}) "
-        "AND n.type = 'decision' AND n.id != ? ORDER BY n.date, n.id",
-        (*paths, dec_id),
-    ).fetchall()
-    history: list[PathHistoryEntry] = []
-    for row in rows:
-        fm = json.loads(row["frontmatter"] or "{}")
-        history.append(
-            PathHistoryEntry(
-                decision_id=row["id"],
-                date=row["date"] or "",
-                status=fm.get("status", ""),
-                prediction_history=fm.get("prediction_history") or [],
-            )
+def _path_history(cfg, dec_id: str, file_paths: list[str]) -> list[PathHistoryEntry]:
+    """Every other decision on any of ``file_paths``, with its status and
+    verdicts."""
+    from thinkweave.operations import decisions
+
+    return [
+        PathHistoryEntry(
+            decision_id=r.id,
+            date=r.date,
+            status=r.frontmatter.get("status", ""),
+            prediction_history=r.frontmatter.get("prediction_history") or [],
         )
-    return history
+        for r in decisions.list_by_file(cfg, file_paths)
+        if r.id != dec_id
+    ]
