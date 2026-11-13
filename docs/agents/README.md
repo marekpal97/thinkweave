@@ -44,3 +44,8 @@ there in place of its packaged default.
   `shape-brief.md`, `constitution.md`: the pack texts. Without the rail,
   devloop serves its module constants and packaged files, which these copies
   equal as of the funloops pin they were written from.
+- `devloop/ship.md`, when the rail holds one: the PR body, the findings
+  comment and the report shape, which the command doc reads through
+  `python scripts/issue_loop.py text ship`. Absent, devloop serves its
+  packaged `ship.md`. `text <name>` prints any of the texts above the same
+  way.

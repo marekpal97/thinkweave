@@ -1976,6 +1976,9 @@ class TestUserPromptSubmitHook:
             "repo": str(rail), "commit": run_git("rev-parse", "HEAD", cwd=rail), "dirty": False,
         }
         assert stamp["manifest"]["readers"]["thinkweave"]
+        assert stamp["manifest"]["readers"]["project"] == {
+            "repo": str(repo), "commit": run_git("rev-parse", "HEAD", cwd=repo), "dirty": False,
+        }
         again = self._run_prompt(cfg, monkeypatch, "ses-man-1", "more", cwd=str(repo))
         assert [r["type"] for r in again].count("manifest") == 1
 

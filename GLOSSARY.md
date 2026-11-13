@@ -30,7 +30,7 @@ _Avoid_: stamp, snapshot, fingerprint, audit
 _Concepts_: task-trajectory, observability
 
 **Manifest**:
-The witness record on a task round: `{harness, readers, rsi_rail: {commit, dirty}, harness_settings}`. `readers` names each reader's version (thinkweave commit, funloops pin, plugin versions); `harness_settings` carries the `settings.json` values the repo cannot hold.
+The witness record on a task round: `{harness, readers, rsi_rail: {commit, dirty}, harness_settings}`. `readers` names each reader's version (thinkweave commit, funloops pin, plugin versions) and `project`, the git repo the round ran in as `{repo, commit, dirty}`; `harness_settings` carries the `settings.json` values the repo cannot hold.
 _Avoid_: lockfile, fingerprint, stamp, environment
 _Concepts_: task-trajectory, experiment-management
 

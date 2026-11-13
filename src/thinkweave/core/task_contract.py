@@ -586,12 +586,17 @@ def _envelopes(value, where):
 
 _COST = _closed_dict({"tokens": _number, "duration": _number})
 
+_REPO_STATE = _closed_dict({"repo": _str, "commit": _base_sha, "dirty": _bool})
+
 # The policy a round ran under (``core.manifest``): the rsi-rail repo state,
-# the harness, and the versions of what read the policy.
+# the harness, and the versions of what read the policy, the repo the round
+# ran in among them.
 _MANIFEST = _closed_dict({
     "harness": _str,
-    "rsi_rail": _closed_dict({"repo": _str, "commit": _base_sha, "dirty": _bool}),
-    "readers": _closed_dict({"thinkweave": _str, "funloops": _str, "plugins": _str_map}),
+    "rsi_rail": _REPO_STATE,
+    "readers": _closed_dict({
+        "thinkweave": _str, "funloops": _str, "plugins": _str_map, "project": _REPO_STATE,
+    }),
     # The harness readout (dec-4f158b58): witnessed settings values, the
     # registered hook events and the profile's hook literals.
     "harness_settings": _closed_dict({
