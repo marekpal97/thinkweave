@@ -145,6 +145,17 @@ def _parse_identities(value, cfg: Config) -> tuple[str, ...]:
     return tuple(value)
 
 
+def _parse_band(value, cfg: Config) -> tuple[float, float]:
+    """A ``[low, high]`` pair of probabilities, low first."""
+    try:
+        low, high = (float(v) for v in value)
+    except (TypeError, ValueError):
+        raise ValueError(f"a band is [low, high], got {value!r}") from None
+    if not 0.0 <= low <= high <= 1.0:
+        raise ValueError(f"a band needs 0 <= low <= high <= 1, got {value!r}")
+    return low, high
+
+
 def resolve_ref(ref: str):
     """The object a ``"module:attr"`` metadata reference names. Imported
     on use: the readers it names import this module."""
@@ -531,7 +542,7 @@ class EffectiveHooks:
     refused: tuple[str, ...] = ()
 
 
-_VERDICT_EVENTS = ("UserPromptSubmit", "wrap")
+_VERDICT_EVENTS = ("UserPromptSubmit", "weave_call", "wrap")
 
 
 @dataclass
@@ -543,15 +554,22 @@ class QuestionSet:
     verdict must reach, ``pool_size`` the candidates scored per call, and
     ``deadline_ms`` how long the question set waits for the backend. The prompt gate
     reads its question set at UserPromptSubmit and the ex-post judge at wrap; the
-    pool and the deadline bound the prompt gate only.
+    acquisition dedup and the concept guard read theirs inside ``weave_*`` calls
+    and at wrap; the citation backfill and the news triage read theirs in a
+    ``weave decide`` call. The deadline bounds the prompt gate only.
+    ``escalate`` is the news triage's band, low to high inclusive: an item
+    whose top verdict probability falls inside it goes to the triage worker.
     """
 
     enabled: bool = knob(False, read_at=_VERDICT_EVENTS, parse=bool)
     backend: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
     model: str = knob("", read_at=_VERDICT_EVENTS, parse=str)
     accept: float = knob(0.7, read_at=_VERDICT_EVENTS, parse=float)
-    pool_size: int = knob(30, read_at="UserPromptSubmit", parse=int)
+    pool_size: int = knob(30, read_at=_VERDICT_EVENTS, parse=int)
     deadline_ms: int = knob(1500, read_at="UserPromptSubmit", parse=int)
+    escalate: tuple[float, float] = knob(
+        (0.35, 0.65), read_at="weave_call", parse=_parse_band
+    )
 
 
 @dataclass

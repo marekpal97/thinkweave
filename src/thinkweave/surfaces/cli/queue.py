@@ -1,4 +1,4 @@
-"""``weave queue`` — inspect per-source-type acquisition queues."""
+"""``weave queue`` — inspect per-source-type acquisition queues and enqueue into them."""
 
 from __future__ import annotations
 
@@ -55,6 +55,15 @@ def cmd_queue(args: argparse.Namespace) -> None:
             print(f"Queue '{source_type}' is empty.")
             return
         print(json.dumps(items, indent=2, ensure_ascii=False))
+        return
+
+    if action == "enqueue":
+        from thinkweave.operations.queue import enqueue
+
+        if not source_type or not args.item:
+            print("enqueue requires a source_type and --item '<json object>'.")
+            sys.exit(1)
+        print(enqueue(cfg, source_type, json.loads(args.item)).line())
         return
 
     if action == "peek":

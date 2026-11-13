@@ -1,0 +1,19 @@
+# Packaged default for the `citation` question set: for a recorded decision
+# that links no vault note, judge which of the notes its session was served
+# the reasoning relied on. A rail copy at thinkweave/questions/citation.toml
+# replaces this file whole. Slots: {decision}; per served note, {candidate}.
+state = """
+A user works with a coding agent that can read notes from the user's personal
+knowledge vault. During one session the agent recorded this decision:
+
+{decision}
+
+The agent was shown the vault notes asked about below at some point in that
+session. Most of them did not shape this decision.
+"""
+
+[questions.relied]
+type = "noul"
+per_subject = true
+instructions = """Does this decision's reasoning rely on this vault note? \
+Note: {candidate}"""

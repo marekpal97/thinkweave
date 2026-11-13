@@ -129,26 +129,18 @@ def create_note(
     in ``extra_frontmatter`` are split through the merged ontology —
     canonical terms stay in ``concepts:``, unrecognised ones get routed to
     ``proposed_concepts:`` for later promotion via ``/weave-resolve-concepts``.
+    The concept guard judges each proposed term on the way and records its
+    rewrites and hints on the note.
     Both surfaces (CLI ``weave add`` and MCP ``weave_create``) get this gate
     uniformly; ``weave_extract`` runs its own equivalent split before reaching
     this function.
     """
-    from thinkweave.synthesis.concepts import split_concepts_by_ontology
+    from thinkweave.operations.verdicts import ConceptGuard
 
     fm = dict(extra_frontmatter) if extra_frontmatter else {}
     if "concepts" in fm or "proposed_concepts" in fm:
-        canonical, proposed = split_concepts_by_ontology(
-            fm.get("concepts"),
-            proposed=fm.get("proposed_concepts"),
-        )
-        if canonical:
-            fm["concepts"] = canonical
-        else:
-            fm.pop("concepts", None)
-        if proposed:
-            fm["proposed_concepts"] = proposed
-        else:
-            fm.pop("proposed_concepts", None)
+        gated = ConceptGuard(cfg).gate(fm.pop("concepts", None), fm.pop("proposed_concepts", None))
+        fm.update(gated)
 
     # Soft theme-ref validation gate. Drops `relates_to: [thm-X]` entries that
     # don't appear in the registry; log a warning. Mirrors how ``proposed_concepts:``
@@ -316,32 +308,17 @@ def update_note(
     # enforces. Only the ``concepts`` field is gated — every other key
     # (``tags``, ``status``, ``commit_refs``, ...) passes through untouched.
     # Non-canonical terms get merged into ``proposed_concepts:`` alongside any
-    # already present on the note (de-duped, lowercased, stripped via
-    # ``split_concepts_by_ontology``).
+    # already present on the note, which the concept guard leaves unjudged.
     if frontmatter_updates and "concepts" in frontmatter_updates:
-        from thinkweave.synthesis.concepts import split_concepts_by_ontology
+        from thinkweave.operations.verdicts import ConceptGuard
 
         frontmatter_updates = dict(frontmatter_updates)
-        incoming_proposed = frontmatter_updates.get("proposed_concepts")
-        if incoming_proposed is None:
-            # Merge against the note's existing proposed_concepts so we don't
-            # drop entries the caller didn't touch.
-            existing_proposed = existing_pre.frontmatter.get("proposed_concepts") or []
-            if isinstance(existing_proposed, str):
-                existing_proposed = [existing_proposed]
-            incoming_proposed = list(existing_proposed)
-        canonical, proposed = split_concepts_by_ontology(
-            frontmatter_updates.get("concepts"),
-            proposed=incoming_proposed,
+        gated = ConceptGuard(cfg).gate(
+            frontmatter_updates.pop("concepts"),
+            frontmatter_updates.pop("proposed_concepts", None),
+            prior=existing_pre.frontmatter,
         )
-        if canonical:
-            frontmatter_updates["concepts"] = canonical
-        else:
-            frontmatter_updates.pop("concepts", None)
-        if proposed:
-            frontmatter_updates["proposed_concepts"] = proposed
-        else:
-            frontmatter_updates.pop("proposed_concepts", None)
+        frontmatter_updates.update(gated)
 
     vm.update_note(
         path,

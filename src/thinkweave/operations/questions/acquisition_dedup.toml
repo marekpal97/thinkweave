@@ -1,0 +1,20 @@
+# Packaged default for the `acquisition_dedup` question set: before a
+# concept-grain item joins an acquisition queue, decide whether the vault
+# already holds it as a source. A rail copy at
+# thinkweave/questions/acquisition_dedup.toml replaces this file whole.
+# Slots: {subject}; per existing source, {candidate}.
+state = """
+A user keeps a personal knowledge vault of sources: papers, articles and
+repositories. This item is about to be queued for acquisition:
+
+{subject}
+"""
+
+[questions.duplicate]
+type = "choice"
+instructions = """Is the item the same work as one of these sources already \
+in the vault? Choose that source, or `new` when it is none of them."""
+option = "The item is the same work as this source, even at another URL: {candidate}"
+
+[questions.duplicate.criteria]
+new = "The item is none of the listed sources."

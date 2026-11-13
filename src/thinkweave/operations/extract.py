@@ -33,9 +33,9 @@ from thinkweave.operations.tasks import RefEvidence
 from thinkweave.synthesis.concepts import (
     build_keep_set,
     load_ontology,
-    split_concepts_by_ontology,
 )
 from thinkweave.operations import rejudge_queue
+from thinkweave.operations.verdicts import ConceptGuard
 from thinkweave.synthesis.prediction import append_verdict
 
 
@@ -337,21 +337,16 @@ def extract_session(
     # They flow into `proposed_concepts:` and surface in
     # /weave-resolve-concepts at count >= DRIFT_COUNT_THRESHOLD for review.
     ontology_keep = build_keep_set(load_ontology())
+    guard = ConceptGuard(cfg)
 
     for insight in insights_in:
         title = insight["title"]
         body = insight["body"]
         tags = insight.get("tags", [])
-        canonical, proposed = split_concepts_by_ontology(
-            insight.get("concepts", []),
-            proposed=insight.get("proposed_concepts", []),
+        extra_fm: dict = {"derived_from": [session_id]} | guard.gate(
+            insight.get("concepts"), insight.get("proposed_concepts", []),
             ontology_keep=ontology_keep,
         )
-        extra_fm: dict = {"derived_from": [session_id]}
-        if canonical:
-            extra_fm["concepts"] = canonical
-        if proposed:
-            extra_fm["proposed_concepts"] = proposed
         path = vm.create_note(
             note_type=NoteType.NOTE,
             title=title,
@@ -393,15 +388,9 @@ def extract_session(
         }
         if dec.get("file_paths"):
             extra_fm["file_paths"] = dec["file_paths"]
-        dec_canonical, dec_proposed = split_concepts_by_ontology(
-            dec.get("concepts", []),
-            proposed=dec.get("proposed_concepts", []),
-            ontology_keep=ontology_keep,
+        extra_fm |= guard.gate(
+            dec.get("concepts"), dec.get("proposed_concepts", []), ontology_keep=ontology_keep
         )
-        if dec_canonical:
-            extra_fm["concepts"] = dec_canonical
-        if dec_proposed:
-            extra_fm["proposed_concepts"] = dec_proposed
         if dec.get("supersedes"):
             extra_fm["supersedes"] = dec["supersedes"]
         if dec.get("cites"):

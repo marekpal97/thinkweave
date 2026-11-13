@@ -5,7 +5,9 @@ A question set is a named group of questions with one state text:
 asks a decision provider, :func:`record_verdict` records the answer as a
 ``verdict`` event that the indexer projects into the ``verdicts`` table,
 :func:`run_question_set` does both, and :func:`record_miss` records a call that gave
-no verdict.
+no verdict. :func:`judge_duplicate` is the one duplicate judgment: a ``choice``
+over a subject's nearest neighbours plus ``new``, asked by the acquisition
+dedup at enqueue and by the concept guard behind the ontology gate.
 
 A session's :class:`Ledger` is the one reader of its event archive and live
 buffer. The ex-post judge reads it: :func:`ex_post_pass` asks, per closed
@@ -13,6 +15,8 @@ turn, whether the turn's work relied on each note it was offered or served,
 and asks the same of startup items against the whole session.
 ``wrap-finalize`` runs the pass, :func:`sweep` runs it for sessions no wrap
 judged, and :func:`readout` reports the verdicts per question set and source.
+:func:`backfill_citations` asks, per decision that cites no note, which of the
+notes its session was served the reasoning relied on, and links those.
 """
 
 from __future__ import annotations
@@ -39,6 +43,9 @@ from thinkweave.core.decision_provider import (
     Question,
     build_from_vault,
 )
+from thinkweave.core.schemas import NoteMeta
+from thinkweave.core._utils import as_list
+from thinkweave.synthesis.concepts import split_concepts_by_ontology, suggest_similar
 
 PHASES = ("ex_ante", "ex_post")
 
@@ -55,9 +62,29 @@ EX_POST = "ex_post"
 #: The question set ``weave decide smoke`` asks: one end-to-end call.
 SMOKE = "smoke"
 
+#: The question set that judges, at enqueue, whether a concept-grain item
+#: duplicates a source already in the vault.
+ACQUISITION_DEDUP = "acquisition_dedup"
+
+#: The question set that judges whether a term the ontology gate shunts is a
+#: synonym of a canonical concept.
+CONCEPT_GUARD = "concept_guard"
+
+#: The question set that judges which served notes a decision's reasoning
+#: relied on.
+CITATION = "citation"
+
+#: The question set that triages a queued news item against the active themes.
+NEWS_TRIAGE = "news_triage"
+
 #: Every question set, each with a text under ``questions/``. The
 #: ``[verdicts.<question_set>]`` knob tables are keyed by these names.
-QUESTION_SETS = (PROMPT_GATE, EX_POST, SMOKE)
+QUESTION_SETS = (
+    PROMPT_GATE, EX_POST, SMOKE, ACQUISITION_DEDUP, CONCEPT_GUARD, CITATION, NEWS_TRIAGE,
+)
+
+#: The option of a duplicate judgment that names no neighbour.
+NEW = "new"
 
 #: Characters of the final assistant message a ``turn_end`` event keeps.
 FINAL_MESSAGE_CHARS = 2000
@@ -182,6 +209,126 @@ def record_miss(
     )
 
 
+def judge_duplicate(
+    cfg: Config,
+    subject: str,
+    neighbours: dict[str, str],
+    question_set: str,
+    *,
+    subject_id: str = "",
+    provider: DecisionProvider | None = None,
+) -> "Duplicate | None":
+    """Ask ``question_set`` which of ``neighbours`` (id to text, nearest
+    first) ``subject`` duplicates, if any, and record the verdict.
+
+    The verdict row's subject is ``subject_id``, else ``subject`` itself.
+    Returns ``None`` when nothing was judged: the question set is off, there
+    is no neighbour, or the call gave no usable answer. A failed call and a
+    choice that was never offered are each logged as a ``verdict_miss``.
+    """
+    policy = cfg.question_set(question_set)
+    if not policy.enabled or not neighbours:
+        return None
+    try:
+        decision = ask_question_set(
+            cfg, question_set, {"subject": subject},
+            subjects={n: {"candidate": text} for n, text in neighbours.items()},
+            provider=provider,
+        )
+    except Exception as exc:
+        record_miss(cfg, question_set, f"{type(exc).__name__}: {exc}")
+        return None
+    answer = decision.answers[0]
+    if answer.value != NEW and answer.value not in neighbours:
+        record_miss(cfg, question_set, f"choice {answer.value!r} was never offered")
+        return None
+    of = "" if answer.value == NEW else str(answer.value)
+    probability = float(answer.probs.get(answer.value, 0.0))
+    verdict = Duplicate(of, probability, bool(of) and probability >= policy.accept)
+    record_verdict(
+        cfg, question_set, decision, subject_id=subject_id or subject,
+        action="duplicate" if verdict.confident else "suggested" if of else "none",
+    )
+    return verdict
+
+
+@dataclass(frozen=True)
+class Duplicate:
+    """One duplicate judgment: the neighbour the subject duplicates (empty
+    for none), the probability behind that choice, and whether it names a
+    neighbour at or above the question set's ``accept``."""
+
+    of: str
+    probability: float
+    confident: bool
+
+
+@dataclass
+class ConceptGuard:
+    """The ontology gate with the concept guard behind it.
+
+    :meth:`gate` splits a note's concepts through the ontology and judges
+    each term bound for ``proposed_concepts`` against the canonical concepts
+    near it: a confident synonym becomes the canonical term, a likely one
+    stays proposed with the canonical term as a hint. One guard judges a
+    term once, however many notes carry it.
+    """
+
+    cfg: Config
+    provider: DecisionProvider | None = None
+    judged: dict[str, Duplicate | None] = field(default_factory=dict)
+
+    def gate(
+        self,
+        concepts: list[str] | None,
+        proposed: list[str] | None = None,
+        *,
+        ontology_keep: set[str] | None = None,
+        prior: dict | None = None,
+    ) -> dict[str, list[str] | dict[str, str]]:
+        """A note's concept frontmatter: ``concepts``, ``proposed_concepts``,
+        ``concept_synonyms`` (each rewritten term to the canonical concept it
+        became) and ``concept_hints`` (each proposed term to its likely
+        canonical concept); an empty field is left out.
+
+        ``prior`` is the frontmatter of a note being updated: the proposed
+        terms it carries are never judged, they stay proposed when
+        ``proposed`` is ``None``, and its synonyms and hints are kept.
+        """
+        prior = prior or {}
+        carried = [c.lower() for c in as_list(prior.get("proposed_concepts"))]
+        found: dict[str, dict[str, str]] = {"concept_synonyms": {}, "concept_hints": {}}
+
+        def resolve(term: str, keep: set[str]) -> str:
+            verdict = None if term in carried else self._judge(term, keep)
+            if verdict is None or not verdict.of:
+                return term
+            found["concept_synonyms" if verdict.confident else "concept_hints"][term] = verdict.of
+            return verdict.of if verdict.confident else term
+
+        canonical, shunted = split_concepts_by_ontology(
+            concepts,
+            proposed=carried if proposed is None else proposed,
+            ontology_keep=ontology_keep,
+            resolve=resolve,
+        )
+        fields = {"concepts": canonical, "proposed_concepts": shunted}
+        fields.update({k: {**(prior.get(k) or {}), **v} for k, v in found.items() if v})
+        return {key: value for key, value in fields.items() if value}
+
+    def _judge(self, term: str, ontology_keep: set[str]) -> Duplicate | None:
+        policy = self.cfg.question_set(CONCEPT_GUARD)
+        if not policy.enabled:
+            return None
+        if term not in self.judged:
+            by_length = sorted(ontology_keep, key=lambda c: (abs(len(c) - len(term)), c))
+            near = suggest_similar(term, by_length, policy.pool_size)
+            self.judged[term] = judge_duplicate(
+                self.cfg, term, {c: c for c in near}, CONCEPT_GUARD, provider=self.provider
+            )
+        return self.judged[term]
+
+
 @dataclass(frozen=True)
 class QuestionSetText:
     """A question set's state-assembly text: a state template and its question templates."""
@@ -203,18 +350,27 @@ class QuestionSetText:
         """Fill every template with ``slots`` via ``str.format``.
 
         A question with ``per_subject = true`` is asked once per entry of
-        ``subjects``, its template filled with that subject's slots too.
+        ``subjects``, its template filled with that subject's slots too. A
+        ``choice`` question with an ``option`` template offers one option per
+        entry of ``subjects``, keyed by the subject id, ahead of its ``criteria``.
         """
         questions = []
         for name, spec in self.questions.items():
             asked = (subjects or {}).items() if spec.get("per_subject") else [("", {})]
             for subject, own in asked:
                 filled = {**slots, **own}
+                criteria = {k: v.format(**filled) for k, v in spec.get("criteria", {}).items()}
+                if "option" in spec:
+                    offered = {
+                        s: spec["option"].format(**{**slots, **o})
+                        for s, o in (subjects or {}).items()
+                    }
+                    criteria = {**offered, **criteria}
                 questions.append(Question(
                     name=name,
                     kind=spec["type"],
                     instructions=spec["instructions"].format(**filled),
-                    criteria={k: v.format(**filled) for k, v in spec.get("criteria", {}).items()},
+                    criteria=criteria,
                     subject=subject,
                 ))
         return self.state.format(**slots), questions
@@ -337,6 +493,114 @@ def readout(
             if ev.get("type") == VERDICT_MISS:
                 at(str(ev.get("question_set") or ""), str(ev.get("source") or "")).misses += 1
     return [question_sets[key].finish() for key in sorted(question_sets)]
+
+
+# ---------------------------------------------------------------------------
+# The citation backfill
+# ---------------------------------------------------------------------------
+
+
+def backfill_citations(
+    cfg: Config, *, dry_run: bool = False, provider: DecisionProvider | None = None
+) -> "CitationBackfill":
+    """Ask, per decision that cites no note, which notes served to its
+    session the reasoning relied on, and append those as a ``cites:`` line
+    of path-based links; then rebuild the index once.
+
+    A decision is asked once: its verdicts mark it judged whatever they say.
+    A call that fails is logged as a ``verdict_miss`` and the decision waits
+    for the next run. With ``dry_run`` nothing is written: no link, no
+    verdict, no miss. Does nothing while the ``citation`` question set is off.
+    """
+    from thinkweave.core.vault import VaultManager
+
+    result = CitationBackfill()
+    policy = cfg.question_set(CITATION)
+    if not policy.enabled:
+        return result
+    vault = VaultManager(config=cfg)
+    owed = _uncited_decisions(cfg, vault)
+    texts = _note_texts(cfg, {nid for uncited in owed for nid in uncited.served})
+    for uncited in owed:
+        decision = uncited.note
+        try:
+            answered = [
+                ask_question_set(
+                    cfg, CITATION, uncited.slots(), provider=provider,
+                    subjects={nid: {"candidate": texts[nid]} for nid in pool},
+                )
+                for pool in uncited.pools(policy.pool_size)
+            ]
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            if not dry_run:
+                record_miss(cfg, CITATION, reason, source=decision.id)
+            result.misses.append(f"{decision.id}: {reason}")
+            continue
+        cited = tuple(
+            a.subject for call in answered for a in call.answers if a.value >= policy.accept
+        )
+        result.proposals.append(CitationProposal(decision.id, decision.title, cited))
+        if dry_run:
+            continue
+        for call in answered:
+            record_verdict(
+                cfg, CITATION, call, phase="ex_post", source=decision.id,
+                actions={nid: "cited" for nid in cited},
+            )
+        if cited:
+            vault.update_note(decision.path, body_append=uncited.cites_line(cited))
+            result.written += 1
+    if result.proposals and not dry_run:
+        _rebuild(cfg)
+    return result
+
+
+@dataclass(frozen=True)
+class UncitedDecision:
+    """A decision the backfill owes a call: its note, and the vault notes its
+    session was served, each id mapped to its vault path."""
+
+    note: NoteMeta
+    served: dict[str, str]
+
+    def slots(self) -> dict[str, str]:
+        return {"decision": f"{self.note.title}\n\n{self.note.body.strip()}"}
+
+    def pools(self, size: int) -> list[list[str]]:
+        """The served ids in calls of at most ``size`` candidates."""
+        ids = list(self.served)
+        return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+    def cites_line(self, cited: tuple[str, ...]) -> str:
+        """The body line that links ``cited`` by path."""
+        from thinkweave.synthesis.hub import reflink
+
+        return "cites: " + ", ".join(reflink(nid, self.served) for nid in cited)
+
+
+@dataclass(frozen=True)
+class CitationProposal:
+    """One decision the backfill judged and the served notes it would cite:
+    those the ``citation`` question set scored at or above ``accept``."""
+
+    decision_id: str
+    title: str
+    cited: tuple[str, ...]
+
+
+@dataclass
+class CitationBackfill:
+    """What one backfill run did: a proposal per decision judged, the number
+    of decisions that got a ``cites:`` line, and one line per decision whose
+    call gave no verdict."""
+
+    proposals: list[CitationProposal] = field(default_factory=list)
+    written: int = 0
+    misses: list[str] = field(default_factory=list)
+
+    def as_dict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -705,6 +969,58 @@ def _note_texts(cfg: Config, ids: set[str]) -> dict[str, str]:
         )
         for nid, row in rows.items()
     }
+
+
+def _uncited_decisions(cfg: Config, vault) -> list[UncitedDecision]:
+    """Each decision the backfill still owes a call, with the vault notes
+    its session was served (the decision and its own session left out).
+
+    A decision is owed when the vault log holds no ``citation`` verdict for
+    it, its body cites no note id, and its session served at least one note.
+    """
+    from thinkweave.core.indexer import Indexer
+    from thinkweave.operations.rlvr_export import extract_cited_ids, served_rows
+    from thinkweave.synthesis.hub import build_id_path_map
+
+    log = Ledger.from_streams(None, [verdicts_log_path(cfg.vault_root)])
+    judged = {
+        ev.get("source") for ev in log.events
+        if ev.get("type") == "verdict" and ev.get("question_set") == CITATION
+    }
+    owed = []
+    idx = Indexer(config=cfg)
+    try:
+        paths = build_id_path_map(idx.db)
+        rows = idx.db.execute(
+            "SELECT id, path, frontmatter FROM notes WHERE type = 'decision' ORDER BY date, id"
+        ).fetchall()
+        for row in rows:
+            session = str(json.loads(row["frontmatter"] or "{}").get("source_session") or "")
+            if not session or row["id"] in judged:
+                continue
+            served = sorted({
+                r["note_id"] for r in served_rows(idx, session)
+                if _judged(r["note_id"]) and r["note_id"] in paths
+                and r["note_id"] not in (row["id"], session)
+            })
+            if not served:
+                continue
+            note = vault.read_note(vault.root / row["path"])
+            if not extract_cited_ids(note.body):
+                owed.append(UncitedDecision(note, {nid: paths[nid] for nid in served}))
+    finally:
+        idx.close()
+    return owed
+
+
+def _rebuild(cfg: Config) -> None:
+    from thinkweave.core.indexer import Indexer
+
+    idx = Indexer(config=cfg)
+    try:
+        idx.rebuild()
+    finally:
+        idx.close()
 
 
 def _reproject(cfg: Config, folder: Path) -> None:

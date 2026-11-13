@@ -38,6 +38,8 @@ weave health [--json]                         # jobs/queues/hooks/digest; exit 1
 weave decide smoke [--backend B] [--model M]  # one end-to-end System 1 decision call: answers, cost, and the verdicts row it projects
 weave decide sweep [--project P] [--since D] [--json]  # ex-post judge over every session it has not judged (wrap-finalize runs it per session)
 weave decide readout [--project P] [--since D] [--threshold T] [--json]  # per question set and source: counts, served/rejected × used/unused, calibration, miss rate, latency p50/p95, cost
+weave decide backfill-citations [--dry-run] [--json]  # per decision that cites no note: which served notes its reasoning relied on, appended as a `cites:` line of path links; --dry-run lists proposals and writes nothing
+weave decide triage --source-type S [--limit N]  # stage-1 System 1 triage of a queue's head: JSON {id, verdict, theme_id, probability, reason} per item; `escalate` goes to the Haiku worker (/drain calls this)
 weave learn check --note <id>                 # learn-note frontmatter contract; exit 1 on problems
 weave learn probe --session <uuid|ses-id> --text "…"  # unanswered question → probe row
 weave explain locate --session <uuid|ses-id> --scope session|diff --target <t>  # explain note id a re-run updates, or nothing
@@ -49,7 +51,7 @@ weave concepts {list|merge|hubs|drift|notes|prune}
 weave hubs {status|plan|link|repair}          # concept-hub backfill (use `weave drain --target hubs` to execute)
 weave themes rebuild-registry                 # rebuild themes.yaml from canonical theme files
 weave drain --target hubs --via {inline|batch}  # batch path replaces `weave hubs run`
-weave queue {list|inspect|peek}               # per-source-type acquisition queues
+weave queue {list|inspect|peek|enqueue}       # per-source-type acquisition queues; enqueue <type> --item '<json>' runs the same dedup checks as weave_queue
 weave hooks {install|uninstall|status}       # install first fans the configured rsi-rail repo out to every registered profile (skills/ folders into skills_dir, rules/agents + rules/output-styles into the Claude Code folders of those names, rules/RULES.md into instructions_file; linked, or spliced between sentinels when the file holds other content), idempotent
 weave landing [--project X] [--doc all]       # regenerate DECISIONS/BACKLOG/STATE/THEMES
 weave flow {list|show|run}                    # named workflow pipelines
@@ -132,7 +134,7 @@ Full inventory — 54 CLI subcommands × 17 MCP tools (audience: *agent* = MCP-o
 | Vault health | `weave stats` | — | admin-cron |
 | Coherence linter | `weave doctor` | — | admin-cron |
 | System health (jobs / queues / hooks / digest) | `weave health` | — | admin-cron — `--json` is **agent-Bash** (`/brief`) |
-| System 1 question sets (smoke / ex-post sweep / readout) | `weave decide` | — | admin-cron |
+| System 1 question sets (smoke / ex-post sweep / readout / citation backfill / triage) | `weave decide` | — | admin-cron |
 | `/learn` rail (check / probe) | `weave learn` | — | agent-Bash (`/learn`); retrieval is the skill's job, its MCP calls land in context_served on their own (dec-696bacfb) |
 | `/explain` rail (locate / check) | `weave explain` | — | agent-Bash (`/explain`); `locate` is the re-run lookup by (session, scope, target), `check` the explain-note contract |
 | Named workflow pipelines | `weave flow` | — | admin-cron |

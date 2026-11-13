@@ -285,16 +285,19 @@ def add_themes_subparsers(sub) -> None:
 def add_drain_subparsers(sub) -> None:
     p_queue = sub.add_parser(
         "queue",
-        help="Inspect per-source-type acquisition queues (.weave/queues/*.jsonl)",
+        help="Inspect or enqueue into per-source-type acquisition queues (.weave/queues/*.jsonl)",
     )
     p_queue.add_argument(
         "action",
-        choices=["list", "inspect", "peek"],
-        help="list — all queues with counts; inspect <type> — full listing; peek <type> — first N items",
+        choices=["list", "inspect", "peek", "enqueue"],
+        help=(
+            "list — all queues with counts; inspect <type> — full listing; "
+            "peek <type> — first N items; enqueue <type> --item JSON — add one item"
+        ),
     )
     p_queue.add_argument(
         "source_type", nargs="?", default="",
-        help="Source type slug (required for inspect / peek)",
+        help="Source type slug (required for inspect / peek / enqueue)",
     )
     p_queue.add_argument(
         "--source-type", dest="source_type_flag", default="",
@@ -302,6 +305,9 @@ def add_drain_subparsers(sub) -> None:
     )
     p_queue.add_argument(
         "--n", type=int, default=5, help="With peek: number of items (default: 5)"
+    )
+    p_queue.add_argument(
+        "--item", default="", help="With enqueue: the item as a JSON object (url, title, …)"
     )
 
     p_drain = sub.add_parser(

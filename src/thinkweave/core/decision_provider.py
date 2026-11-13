@@ -124,18 +124,23 @@ class SystemOneProvider:
 
 
 class FakeDecisionProvider:
-    """Deterministic backend: ``choice`` answers the first option, ``noul`` the
-    subject's value in ``nouls`` (default 0.5); with ``error`` every call raises it.
+    """Deterministic backend: ``choice`` answers the first option with
+    probability ``confidence``, ``noul`` the subject's value in ``nouls``
+    (default 0.5); with ``error`` every call raises it.
 
     Records each ``(state, questions)`` call in :attr:`calls`.
     """
 
     def __init__(
-        self, nouls: dict[str, float] | None = None, error: Exception | None = None
+        self,
+        nouls: dict[str, float] | None = None,
+        error: Exception | None = None,
+        confidence: float = 1.0,
     ) -> None:
         self.calls: list[tuple[str, list[Question]]] = []
         self.nouls = nouls or {}
         self.error = error
+        self.confidence = confidence
 
     def decide(self, state: str, questions: list[Question]) -> Decision:
         self.calls.append((state, list(questions)))
@@ -144,8 +149,9 @@ class FakeDecisionProvider:
         answers = []
         for q in questions:
             if q.kind == "choice":
-                first = next(iter(q.criteria))
-                probs = {opt: 1.0 if opt == first else 0.0 for opt in q.criteria}
+                first, *rest = q.criteria
+                probs = {first: self.confidence}
+                probs.update(dict.fromkeys(rest, (1.0 - self.confidence) / max(len(rest), 1)))
                 answers.append(Answer(q.name, q.kind, first, probs, q.subject))
             else:
                 value = self.nouls.get(q.subject, 0.5)

@@ -2,8 +2,7 @@
 
 Replaces the ad-hoc ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` /
 ``GOOGLE_API_KEY`` reads scattered across :mod:`enrich`,
-:mod:`importers.chatgpt`, :mod:`operations.news_triage`,
-:mod:`operations.hubs_batch`, :mod:`onboarding.enrich_batch`, and
+:mod:`importers.chatgpt`, :mod:`operations.hubs_batch`, :mod:`onboarding.enrich_batch`, and
 :mod:`surfaces.cli._hubs_link`. One canonical lookup path so the user
 configures the key once and every entry point sees it.
 

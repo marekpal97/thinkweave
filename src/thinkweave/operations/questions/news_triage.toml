@@ -1,0 +1,54 @@
+# Packaged default for the `news_triage` question set: before a writer is
+# spent on a queued news item, decide whether the vault keeps it and which
+# active theme it belongs to. A rail copy at
+# thinkweave/questions/news_triage.toml replaces this file whole.
+# Slots: {item}; per active theme, {candidate}.
+state = """
+A generalist quantamental analyst keeps a personal knowledge vault. The
+analyst combines fundamental and quantitative analysis across all equity
+sectors and follows macro closely. The vault tracks a set of active narrative
+themes, and each incoming item is filed under a theme, kept unfiled for a
+later theme review, or dropped as noise.
+
+In scope: single-name equity news with a fundamental or quantitative angle
+(earnings, guidance, margins, capital allocation, M&A, management or strategy
+changes, unusual price or volume moves with a stated cause); sector and
+industry dynamics in any sector; macro (growth, inflation, labour, central
+banks, rates, credit, FX, commodities, fiscal policy, housing); market
+structure and flows; AI infrastructure and the semiconductor, datacenter and
+power complex; the Polish economy and markets; geopolitics with a clear
+market or economic transmission channel.
+
+Out of scope: sports, celebrity, lifestyle and entertainment; link roundups
+and open threads with no single story; site announcements and newsletter
+housekeeping; personal-finance advice columns and reader Q&A; partisan
+horse-race politics with no economic or market channel; clickbait listicles
+and stock-tip promotions; generic think-pieces that name no company, number
+or mechanism.
+
+A tier-1 outlet carries editorial filtering; a tier-2 outlet is opinionated
+and clickbait-prone. Tier matters only for an item that is otherwise
+borderline.
+
+The item:
+
+{item}
+"""
+
+[questions.verdict]
+type = "choice"
+instructions = "What should the vault do with this item?"
+
+[questions.verdict.criteria]
+keep = "The item is in scope and is a development in one of the active themes."
+keep_unfiled = "The item is in scope and substantive, but belongs to no active theme."
+drop = "The item is out of scope or noise."
+
+[questions.theme]
+type = "choice"
+instructions = """Which active theme is the item a development in? Choose \
+`none` when it belongs to none of them."""
+option = "The item is a development in this theme: {candidate}"
+
+[questions.theme.criteria]
+none = "The item belongs to none of the listed themes."

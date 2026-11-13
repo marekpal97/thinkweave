@@ -81,29 +81,46 @@ For each item:
 
 ### Path B: Writer fan-out (`subagent_type` is set), optionally preceded by triage
 
-The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is **either** decided upstream (channel allowlist / sender allowlist — no triage stage), **or** decided per-drain by a cheap Haiku triage on titles (news's "fits an active theme?" filter). The presence of `triage_model` in the source's config selects which.
+The drain orchestrator spawns Sonnet writer subagents in parallel. Admission is **either** decided upstream (channel allowlist / sender allowlist — no triage stage), **or** decided per-drain by a title-only triage (news's "fits an active theme?" filter): System 1 first, and a Haiku subagent only for the items System 1 escalates. The presence of `triage_model` in the source's config selects which.
 
 **Install-route namespacing.** Plugin installs register the workers under the `thinkweave:` namespace; project-scope installs use bare names. Spawn with the bare type from config first; if it doesn't resolve, retry once as `thinkweave:<subagent_type>` (the failure message lists the available types). Applies to the triage and writer `Task` calls below.
 
 | `triage_model` | Stage 1 | Stage 2 |
 |---|---|---|
-| set (e.g. `claude-haiku-4-5`) | Haiku triage per item | Writers fan out only for `keep`/`keep_unfiled` items |
+| set (e.g. `claude-haiku-4-5`) | System 1 triage per item, then Haiku triage for the escalated items | Writers fan out only for `keep`/`keep_unfiled` items |
 | **unset** (default) | **skipped** — every item treated as `keep_unfiled` | Writers fan out for every queue item |
 
-**Stage 1 — Haiku triage subagent. Only runs when `triage_model` is set.**
+**Stage 1 — triage. Only runs when `triage_model` is set.**
 
-Take up to `drain_batch_max` items off the queue (don't archive yet). Build a JSON list of `{id, title, outlet, tier, summary}` for each (`summary` = the feed description when the item carries one — podcasts always do; omit the key when empty). Include `source_type` once at the top of the items payload so the worker can apply lane-specific calibration. Then spawn the triage subagent:
+Take up to `drain_batch_max` items off the queue (don't archive yet).
+
+**Stage 1a — System 1 triage.** One Bash call triages the same items, the head of the queue:
+
+```
+weave decide triage --source-type <slug> --limit <number of items taken>
+```
+
+It prints a JSON list with one object per item: `{id, verdict, theme_id, probability, reason}`. `verdict` is `keep`, `keep_unfiled`, `drop` or `escalate`.
+
+- `keep` / `keep_unfiled` / `drop`: System 1 decided the item. Use the verdict, `theme_id` and `reason` as they are. Do not send the item to the Haiku worker.
+- `escalate`: System 1 did not decide the item. Its top probability fell inside the escalation band (`[verdicts.news_triage] escalate`, default 0.35 to 0.65), or the question set is off, or the call failed. `reason` says which. Send the item to stage 1b.
+
+If the command exits non-zero, report its error in the summary and send every item to stage 1b.
+
+**Stage 1b — Haiku triage subagent, for the `escalate` items only.** Skip it when no item escalated.
+
+Build a JSON list of `{id, title, outlet, tier, summary}` for each escalated item (`summary` = the feed description when the item carries one — podcasts always do; omit the key when empty). Include `source_type` once at the top of the items payload so the worker can apply lane-specific calibration. Then spawn the triage subagent:
 
 ```
 Task({
   subagent_type: "news-triage-worker",
   model: "haiku",
-  description: "Triage news batch (<n> items)",
+  description: "Triage news batch (<n> escalated items)",
   prompt: "Themes catalog: <vault_root>/THEMES.md\n\nItems:\n<items_json>"
 })
 ```
 
-The subagent's spec lives at `agents/news-triage-worker.md`. It Reads `THEMES.md`, parses the `## Catalog (active)` section, and emits one verdict per input. The orchestrator parses the subagent's final JSON line — a `{<item_id>: {verdict, theme_id, reason}}` map. Verdicts:
+The subagent's spec lives at `agents/news-triage-worker.md`. It Reads `THEMES.md`, parses the `## Catalog (active)` section, and emits one verdict per input. The orchestrator parses the subagent's final JSON line — a `{<item_id>: {verdict, theme_id, reason}}` map. Every item now has one verdict, from stage 1a or from stage 1b. Verdicts:
 
 - `keep` — fits an active theme. Carries a `theme_id`.
 - `keep_unfiled` — substantive but no theme match. `theme_id: null`. Goes to the periodic-review pile (frontmatter flag `theme_unfiled: true`).
@@ -191,6 +208,7 @@ For Path B with triage (news):
 ```
 Drain summary for queue '<slug>' (path=B, two-stage):
   Triage:    K kept (<L theme-attached, M unfiled>) / N drop / 0 errors
+             <S> decided by System 1, <H> escalated to the Haiku worker
   Writers:   <accepted> ⇒ <src-IDs, max 8 then ellipsis>
   Fetch failed: <count> (left in queue)
   Post-batch theme_scan: <new candidates>
@@ -224,7 +242,7 @@ Drain summary for queue '<slug>' (path=A):
 | Path | Used by | Why |
 |---|---|---|
 | A (Skill) | paper, repo, article | Per-item compute is small (one URL fetch + concept extract). Sequential is fine. |
-| B with triage (writer + admission) | news | Title-only Haiku triage decides admission (cheap, batched, prompt-cached); Sonnet writers fan out only on accepts. The two-stage shape decouples gate cost (~$0.005/batch) from per-item brief cost (~$0.10/accept). |
+| B with triage (writer + admission) | news | Title-only triage decides admission: System 1 decides the confident items and a Haiku subagent the escalated ones (cheap, batched); Sonnet writers fan out only on accepts. The two-stage shape decouples gate cost (~$0.005/batch) from per-item brief cost (~$0.10/accept). |
 | B without triage (writer-only) | youtube-events, youtube-concepts | Admission is decided upstream by the channel allowlist in `sources.yaml`. /drain treats every queue item as `keep_unfiled` and fans out workers directly. No per-drain triage cost. |
 
 Adding a source type to Path B without triage requires:
@@ -234,7 +252,7 @@ Adding a source type to Path B without triage requires:
 
 Adding a source type to Path B with triage additionally requires:
 4. `triage_model` set in config.
-5. The triage helper (currently news-specific in `operations/news_triage.py`) generalised — when we get there, the catalog source is the natural axis (themes for news, ontology for papers, repo languages for repos…).
+5. The triage question set (`news_triage`, its text news-specific in `operations/questions/news_triage.toml`) generalised — when we get there, the catalog source is the natural axis (themes for news, ontology for papers, repo languages for repos…).
 
 No changes to this skill.
 
@@ -247,7 +265,7 @@ No changes to this skill.
 | `/drain --source-type paper` | Drain papers queue |
 | `/drain --source-type repo` | Drain repos queue |
 | `/drain --source-type article` | Drain articles queue |
-| `/drain --source-type news` | Drain news queue (Haiku triage + Sonnet writers) |
+| `/drain --source-type news` | Drain news queue (System 1 triage, Haiku for escalations, Sonnet writers) |
 | `/drain --source-type youtube-events\|youtube-concepts` | Drain YouTube queue (Sonnet writers, no triage) |
 | `/update-hubs` (default) | 1–20 daily delta hub pairs |
 | `/update-hubs --bulk inline` | 100+ hub pairs, want oversight |

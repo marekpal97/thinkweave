@@ -1205,7 +1205,7 @@ def _collect_memory_seam(cfg: Config) -> dict:
     return surface
 
 
-def _active_theme_meta(cfg: Config) -> dict[str, dict]:
+def active_theme_meta(cfg: Config) -> dict[str, dict]:
     """thm-id → {slug, title, essence_excerpt, concepts} for ACTIVE themes.
 
     Shared by the theme dedup-pair and coarsen-cluster collectors so both
@@ -1263,7 +1263,7 @@ def _collect_theme_dup_candidates(
 
     threshold = float(getattr(cfg, "dream_cosine_threshold", 0.8) or 0.8)
 
-    meta = _active_theme_meta(cfg)
+    meta = active_theme_meta(cfg)
 
     vectors = {
         tid: vec
@@ -1326,7 +1326,7 @@ def _collect_theme_coarsen_clusters(
     coarsen_cap = int(getattr(cfg, "dream_coarsen_cap", 3) or 0)
     coarsen_max_size = int(getattr(cfg, "dream_coarsen_max_size", 6) or 6)
 
-    meta = _active_theme_meta(cfg)
+    meta = active_theme_meta(cfg)
     vectors = {
         tid: vec
         for tid, vec in geometry.theme_vectors(cfg).items()
