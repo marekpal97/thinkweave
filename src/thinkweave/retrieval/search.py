@@ -26,6 +26,21 @@ class SearchResult:
     tags: list[str]
     snippet: str = ""
     rank: float = 0.0
+    frontmatter_json: str = ""
+
+    @property
+    def frontmatter(self) -> dict:
+        """The note's indexed frontmatter, for the lookups that carry it.
+        Raises ``ValueError`` naming the note when the row does not decode."""
+        if not self.frontmatter_json:
+            return {}
+        try:
+            return json.loads(self.frontmatter_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"the index row for {self.id} holds unreadable frontmatter "
+                f"({e}); rebuild the index"
+            ) from e
 
 
 @dataclass
@@ -928,20 +943,27 @@ class Search:
 
     def search_decisions_by_file(
         self,
-        file_path: str,
+        file_path: str | list[str],
         *,
         project: str = "",
         status: str = "",
         limit: int = 50,
     ) -> list[SearchResult]:
-        """Return every decision that touched a given file path.
+        """Return every decision that touched a file path, or any of several,
+        newest first, each once and with its frontmatter.
 
         Uses the ``decision_files`` indexer table (populated from the
         ``file_paths`` frontmatter field of type=decision notes). One indexed
         JOIN replaces scanning every decision's frontmatter.
         """
-        conditions = ["df.file_path = ?", "n.type = 'decision'"]
-        params: list = [file_path]
+        paths = [file_path] if isinstance(file_path, str) else list(file_path)
+        if not paths:
+            return []
+        conditions = [
+            f"df.file_path IN ({', '.join('?' * len(paths))})",
+            "n.type = 'decision'",
+        ]
+        params: list = [*paths]
 
         if project:
             conditions.append("n.project = ?")
@@ -949,8 +971,8 @@ class Search:
 
         where = " AND ".join(conditions)
         sql = f"""
-            SELECT n.id, n.type, n.title, n.path, n.project, n.date, n.tags,
-                   n.frontmatter
+            SELECT DISTINCT n.id, n.type, n.title, n.path, n.project, n.date,
+                   n.tags, n.frontmatter
             FROM decision_files df
             JOIN notes n ON n.id = df.decision_id
             WHERE {where}
@@ -961,28 +983,20 @@ class Search:
 
         results = []
         for row in self.db.execute(sql, params):
-            tags_list = json.loads(row["tags"]) if row["tags"] else []
-
-            # Filter by status if requested — cheap post-filter on small result sets.
-            if status:
-                try:
-                    fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-                except json.JSONDecodeError:
-                    fm = {}
-                if fm.get("status") != status:
-                    continue
-
-            results.append(
-                SearchResult(
-                    id=row["id"],
-                    type=row["type"],
-                    title=row["title"],
-                    path=row["path"],
-                    project=row["project"] or "",
-                    date=row["date"] or "",
-                    tags=tags_list,
-                )
+            result = SearchResult(
+                id=row["id"],
+                type=row["type"],
+                title=row["title"],
+                path=row["path"],
+                project=row["project"] or "",
+                date=row["date"] or "",
+                tags=json.loads(row["tags"]) if row["tags"] else [],
+                frontmatter_json=row["frontmatter"] or "",
             )
+            # Filter by status if requested — cheap post-filter on small result sets.
+            if status and result.frontmatter.get("status") != status:
+                continue
+            results.append(result)
         return results
 
     def similar(

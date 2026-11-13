@@ -20,6 +20,7 @@ import json
 import re
 import subprocess
 import sys
+from typing import TypedDict
 
 from thinkweave.core.config import load_config
 from thinkweave.core.harness import active as active_harness
@@ -169,6 +170,8 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
     - ``successor_decision_id`` (extracted from queue item reason if
       ``source == 'supersession'``)
     - ``source_session``, ``trigger``, ``file_paths``
+    - ``applied`` (the ``{repo, commit}`` of an applied tweak, else null)
+    - ``path_history`` (every other decision on the same ``file_paths``)
 
     Decisions whose markdown no longer resolves get dropped from the
     worklist silently — the queue item is already consumed (we drained
@@ -215,6 +218,7 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
             file_paths = fm.get("file_paths") or []
             if isinstance(file_paths, str):
                 file_paths = [file_paths]
+            file_paths = [str(f) for f in file_paths if f]
             out.append(
                 {
                     "decision_id": dec_id,
@@ -225,9 +229,42 @@ def _build_worklist(cfg, items: list[dict]) -> list[dict]:
                     "successor_decision_id": successor or None,
                     "source_session": fm.get("source_session", "") or "",
                     "trigger": trigger,
-                    "file_paths": [str(f) for f in file_paths if f],
+                    "file_paths": file_paths,
+                    "applied": fm.get("applied") or None,
+                    "path_history": _path_history(cfg, dec_id, file_paths),
                 }
             )
     finally:
         idx.close()
     return out
+
+
+class PathHistoryEntry(TypedDict):
+    """One other decision on a judged decision's file path, as a worklist
+    item's ``path_history`` carries it."""
+
+    decision_id: str
+    date: str
+    status: str
+    prediction_history: list[dict]
+
+
+def _path_history(cfg, dec_id: str, file_paths: list[str]) -> list[PathHistoryEntry]:
+    """Every other decision on any of ``file_paths``, with its status and
+    verdicts."""
+    from thinkweave.operations import decisions
+
+    history: list[PathHistoryEntry] = []
+    for r in decisions.list_by_file(cfg, file_paths):
+        if r.id == dec_id:
+            continue
+        fm = r.frontmatter
+        history.append(
+            PathHistoryEntry(
+                decision_id=r.id,
+                date=r.date,
+                status=fm.get("status", ""),
+                prediction_history=fm.get("prediction_history") or [],
+            )
+        )
+    return history

@@ -456,6 +456,53 @@ class TestDecisionFiles:
         assert "Deprecated dec" not in titles
         s.close()
 
+    def test_search_decisions_by_file_takes_several_paths(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """Several paths: each touching decision once, with its frontmatter."""
+        verdict = {"match": "contradicted", "judged_at": "2026-11-01", "reason": "reverted"}
+        for title, paths, extra in (
+            ("Both", ["a.py", "b.py"], {"status": "rejected", "prediction_history": [verdict]}),
+            ("Only b", ["b.py"], {"status": "accepted"}),
+            ("Elsewhere", ["c.py"], {"status": "accepted"}),
+        ):
+            vault.create_note(
+                NoteType.DECISION, title, body="R", project="p1",
+                extra_frontmatter={"file_paths": paths, **extra},
+            )
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        results = s.search_decisions_by_file(["a.py", "b.py"])
+        assert sorted(r.title for r in results) == ["Both", "Only b"]
+        both = next(r for r in results if r.title == "Both")
+        assert both.frontmatter["status"] == "rejected"
+        assert both.frontmatter["prediction_history"] == [verdict]
+        assert s.search_decisions_by_file([]) == []
+        s.close()
+
+    def test_search_decisions_by_file_unreadable_frontmatter_is_loud(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """A row whose indexed frontmatter does not decode is still listed,
+        and reading its frontmatter (or filtering on it) raises by id."""
+        path = vault.create_note(
+            NoteType.DECISION, "Broken", body="R", project="p1",
+            extra_frontmatter={"file_paths": ["x.py"], "status": "rejected"},
+        )
+        dec_id = vault.read_note(path).id
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        s.db.execute("UPDATE notes SET frontmatter = '{not json' WHERE id = ?", (dec_id,))
+        (row,) = s.search_decisions_by_file("x.py")
+        assert row.id == dec_id
+        with pytest.raises(ValueError, match=dec_id):
+            row.frontmatter
+        with pytest.raises(ValueError, match=dec_id):
+            s.search_decisions_by_file("x.py", status="rejected")
+        s.close()
+
     def test_reindex_replaces_file_paths(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
