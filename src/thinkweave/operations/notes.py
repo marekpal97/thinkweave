@@ -136,25 +136,11 @@ def create_note(
     this function.
     """
     from thinkweave.operations.verdicts import ConceptGuard
-    from thinkweave.synthesis.concepts import split_concepts_by_ontology
 
     fm = dict(extra_frontmatter) if extra_frontmatter else {}
     if "concepts" in fm or "proposed_concepts" in fm:
-        guard = ConceptGuard(cfg)
-        canonical, proposed = split_concepts_by_ontology(
-            fm.get("concepts"),
-            proposed=fm.get("proposed_concepts"),
-            resolve=guard.resolve,
-        )
-        fm.update(guard.record())
-        if canonical:
-            fm["concepts"] = canonical
-        else:
-            fm.pop("concepts", None)
-        if proposed:
-            fm["proposed_concepts"] = proposed
-        else:
-            fm.pop("proposed_concepts", None)
+        gated = ConceptGuard(cfg).gate(fm.pop("concepts", None), fm.pop("proposed_concepts", None))
+        fm.update(gated)
 
     # Soft theme-ref validation gate. Drops `relates_to: [thm-X]` entries that
     # don't appear in the registry; log a warning. Mirrors how ``proposed_concepts:``
@@ -322,32 +308,17 @@ def update_note(
     # enforces. Only the ``concepts`` field is gated — every other key
     # (``tags``, ``status``, ``commit_refs``, ...) passes through untouched.
     # Non-canonical terms get merged into ``proposed_concepts:`` alongside any
-    # already present on the note (de-duped, lowercased, stripped via
-    # ``split_concepts_by_ontology``).
+    # already present on the note, which the concept guard leaves unjudged.
     if frontmatter_updates and "concepts" in frontmatter_updates:
-        from thinkweave.synthesis.concepts import split_concepts_by_ontology
+        from thinkweave.operations.verdicts import ConceptGuard
 
         frontmatter_updates = dict(frontmatter_updates)
-        incoming_proposed = frontmatter_updates.get("proposed_concepts")
-        if incoming_proposed is None:
-            # Merge against the note's existing proposed_concepts so we don't
-            # drop entries the caller didn't touch.
-            existing_proposed = existing_pre.frontmatter.get("proposed_concepts") or []
-            if isinstance(existing_proposed, str):
-                existing_proposed = [existing_proposed]
-            incoming_proposed = list(existing_proposed)
-        canonical, proposed = split_concepts_by_ontology(
-            frontmatter_updates.get("concepts"),
-            proposed=incoming_proposed,
+        gated = ConceptGuard(cfg).gate(
+            frontmatter_updates.pop("concepts"),
+            frontmatter_updates.pop("proposed_concepts", None),
+            prior=existing_pre.frontmatter,
         )
-        if canonical:
-            frontmatter_updates["concepts"] = canonical
-        else:
-            frontmatter_updates.pop("concepts", None)
-        if proposed:
-            frontmatter_updates["proposed_concepts"] = proposed
-        else:
-            frontmatter_updates.pop("proposed_concepts", None)
+        frontmatter_updates.update(gated)
 
     vm.update_note(
         path,

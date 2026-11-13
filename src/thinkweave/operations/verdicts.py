@@ -44,7 +44,8 @@ from thinkweave.core.decision_provider import (
     build_from_vault,
 )
 from thinkweave.core.schemas import NoteMeta
-from thinkweave.synthesis.concepts import suggest_similar
+from thinkweave.core._utils import as_list
+from thinkweave.synthesis.concepts import split_concepts_by_ontology, suggest_similar
 
 PHASES = ("ex_ante", "ex_post")
 
@@ -222,7 +223,8 @@ def judge_duplicate(
 
     The verdict row's subject is ``subject_id``, else ``subject`` itself.
     Returns ``None`` when nothing was judged: the question set is off, there
-    is no neighbour, or the call failed, which is logged as a ``verdict_miss``.
+    is no neighbour, or the call gave no usable answer. A failed call and a
+    choice that was never offered are each logged as a ``verdict_miss``.
     """
     policy = cfg.question_set(question_set)
     if not policy.enabled or not neighbours:
@@ -237,6 +239,9 @@ def judge_duplicate(
         record_miss(cfg, question_set, f"{type(exc).__name__}: {exc}")
         return None
     answer = decision.answers[0]
+    if answer.value != NEW and answer.value not in neighbours:
+        record_miss(cfg, question_set, f"choice {answer.value!r} was never offered")
+        return None
     of = "" if answer.value == NEW else str(answer.value)
     probability = float(answer.probs.get(answer.value, 0.0))
     verdict = Duplicate(of, probability, bool(of) and probability >= policy.accept)
@@ -260,39 +265,68 @@ class Duplicate:
 
 @dataclass
 class ConceptGuard:
-    """The concept guard over one note's concepts.
+    """The ontology gate with the concept guard behind it.
 
-    Judges each term bound for ``proposed_concepts`` against the canonical
-    concepts near it: a confident synonym becomes the canonical term, a
-    likely one stays proposed with the canonical term as a hint.
+    :meth:`gate` splits a note's concepts through the ontology and judges
+    each term bound for ``proposed_concepts`` against the canonical concepts
+    near it: a confident synonym becomes the canonical term, a likely one
+    stays proposed with the canonical term as a hint. One guard judges a
+    term once, however many notes carry it.
     """
 
     cfg: Config
     provider: DecisionProvider | None = None
-    synonyms: dict[str, str] = field(default_factory=dict)
-    hints: dict[str, str] = field(default_factory=dict)
+    judged: dict[str, Duplicate | None] = field(default_factory=dict)
 
-    def resolve(self, term: str, ontology_keep: set[str]) -> str:
-        """The canonical concept ``term`` confidently duplicates, else ``term``."""
+    def gate(
+        self,
+        concepts: list[str] | None,
+        proposed: list[str] | None = None,
+        *,
+        ontology_keep: set[str] | None = None,
+        prior: dict | None = None,
+    ) -> dict[str, list[str] | dict[str, str]]:
+        """A note's concept frontmatter: ``concepts``, ``proposed_concepts``,
+        ``concept_synonyms`` (each rewritten term to the canonical concept it
+        became) and ``concept_hints`` (each proposed term to its likely
+        canonical concept); an empty field is left out.
+
+        ``prior`` is the frontmatter of a note being updated: the proposed
+        terms it carries are never judged, they stay proposed when
+        ``proposed`` is ``None``, and its synonyms and hints are kept.
+        """
+        prior = prior or {}
+        carried = [c.lower() for c in as_list(prior.get("proposed_concepts"))]
+        found: dict[str, dict[str, str]] = {"concept_synonyms": {}, "concept_hints": {}}
+
+        def resolve(term: str, keep: set[str]) -> str:
+            verdict = None if term in carried else self._judge(term, keep)
+            if verdict is None or not verdict.of:
+                return term
+            found["concept_synonyms" if verdict.confident else "concept_hints"][term] = verdict.of
+            return verdict.of if verdict.confident else term
+
+        canonical, shunted = split_concepts_by_ontology(
+            concepts,
+            proposed=carried if proposed is None else proposed,
+            ontology_keep=ontology_keep,
+            resolve=resolve,
+        )
+        fields = {"concepts": canonical, "proposed_concepts": shunted}
+        fields.update({k: {**(prior.get(k) or {}), **v} for k, v in found.items() if v})
+        return {key: value for key, value in fields.items() if value}
+
+    def _judge(self, term: str, ontology_keep: set[str]) -> Duplicate | None:
         policy = self.cfg.question_set(CONCEPT_GUARD)
         if not policy.enabled:
-            return term
-        by_length = sorted(ontology_keep, key=lambda c: (abs(len(c) - len(term)), c))
-        near = suggest_similar(term, by_length, policy.pool_size)
-        verdict = judge_duplicate(
-            self.cfg, term, {c: c for c in near}, CONCEPT_GUARD, provider=self.provider
-        )
-        if verdict is None or not verdict.of:
-            return term
-        (self.synonyms if verdict.confident else self.hints)[term] = verdict.of
-        return verdict.of if verdict.confident else term
-
-    def record(self) -> dict[str, dict[str, str]]:
-        """The frontmatter that records the guard's work on the note:
-        ``concept_synonyms`` maps each rewritten term to the canonical concept
-        it became, ``concept_hints`` each proposed term to its likely one."""
-        fields = {"concept_synonyms": self.synonyms, "concept_hints": self.hints}
-        return {key: dict(value) for key, value in fields.items() if value}
+            return None
+        if term not in self.judged:
+            by_length = sorted(ontology_keep, key=lambda c: (abs(len(c) - len(term)), c))
+            near = suggest_similar(term, by_length, policy.pool_size)
+            self.judged[term] = judge_duplicate(
+                self.cfg, term, {c: c for c in near}, CONCEPT_GUARD, provider=self.provider
+            )
+        return self.judged[term]
 
 
 @dataclass(frozen=True)
