@@ -1,6 +1,6 @@
 """``weave task`` — the task routes' CLI verbs (the headless route).
 
-Six actions over :mod:`thinkweave.operations.tasks`:
+Seven actions over :mod:`thinkweave.operations.tasks`:
 
 - ``weave task open`` — mint a child task at a dispatch boundary. Prints
   the minted task id.
@@ -15,6 +15,10 @@ Six actions over :mod:`thinkweave.operations.tasks`:
 - ``weave task ledger`` — list one session's task boundaries as JSON. The
   hooks mint seam children silently, so this is how the wrap declaration
   composer learns their ids before declaring ``children``.
+- ``weave task rounds [--since <window>] [--task <id>] [--path <file>]`` —
+  print every task's rounds as one JSON object keyed by task id, each round
+  joined to the feedback, skill and nudge events of the session chain it
+  names. Read-only; the diagnosis skills' one view across tasks.
 - ``weave task record-run <payload.json>`` — land a devloop run as a
   ``route: devloop`` round on the open task its issue ref resolves to.
 - ``weave task feedback <verdicts-json>`` — pin prompt verdicts (the
@@ -51,13 +55,15 @@ def cmd_task(args: argparse.Namespace) -> None:
         _cmd_render(args)
     elif action == "ledger":
         _cmd_ledger(args)
+    elif action == "rounds":
+        _cmd_rounds(args)
     elif action == "record-run":
         _cmd_record_run(args)
     elif action == "feedback":
         _cmd_feedback(args)
     else:
         print(
-            "Usage: weave task {open|close|render|ledger|record-run|feedback}",
+            "Usage: weave task {open|close|render|ledger|rounds|record-run|feedback}",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -135,6 +141,19 @@ def _cmd_ledger(args: argparse.Namespace) -> None:
     register = tasks.Register(_load_config(), _session_key(args))
     for entry in register.listing():
         print(json.dumps(entry.to_dict()))
+
+
+def _cmd_rounds(args: argparse.Namespace) -> None:
+    from thinkweave.operations import tasks
+
+    try:
+        found = tasks.RoundLog(_load_config()).read(
+            since=args.since, task_id=args.task, path=args.path
+        )
+    except ValueError as exc:
+        print(f"rounds: {exc}", file=sys.stderr)
+        sys.exit(2)
+    print(json.dumps({t.task_id: t.to_dict() for t in found}))
 
 
 def _cmd_record_run(args: argparse.Namespace) -> None:

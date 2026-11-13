@@ -189,6 +189,8 @@ def tool_schemas() -> list:
                 "Common uses:\n"
                 '- Change decision status: frontmatter={"status": "accepted"}\n'
                 "  Valid statuses: proposed -> accepted -> deprecated -> superseded\n"
+                '- Mark a decision applied: frontmatter={"applied": {"repo": "rsi-rail", '
+                '"commit": "<sha>"}, "status": "accepted"}\n'
                 '- Add tags: frontmatter={"tags": ["new-tag"]} (merges with existing)\n'
                 '- Remove tags: remove_tags=["todo"] (removes from tag list)\n'
                 '- Add edge: frontmatter={"derived_from": ["ses-xxx"]} (merges with existing)\n'

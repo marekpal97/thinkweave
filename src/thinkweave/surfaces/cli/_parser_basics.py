@@ -1155,7 +1155,8 @@ def add_admin_subparsers(sub) -> None:
             "Dispatch-seam task lifecycle: open (mint stub + register row, "
             "prints the task id), close (record the boundary close, compile "
             "the round), render (re-emit the dispatch descriptor JSON), "
-            "ledger (list a session's task boundaries as JSON), record-run "
+            "ledger (list a session's task boundaries as JSON), rounds "
+            "(every task's rounds with their session events, as JSON), record-run "
             "(land a devloop run as a round on its ticket's task), feedback "
             "(pin prompt verdicts to the live session mid-session)."
         ),
@@ -1206,6 +1207,27 @@ def add_admin_subparsers(sub) -> None:
         ),
     )
     p_task_ledger.add_argument("--session", default="")
+    p_task_rounds = task_sub.add_parser(
+        "rounds",
+        help=(
+            "Print every task's rounds as one JSON object keyed by task id: "
+            "each round's manifest, feedback (register, about, text), skill "
+            "invocations, nudges, tool errors, outcomes, served ids and "
+            "decisions. Read-only."
+        ),
+    )
+    p_task_rounds.add_argument(
+        "--since", default="",
+        help="Only rounds dated inside this window: <n>d (days back) or an ISO date.",
+    )
+    p_task_rounds.add_argument("--task", default="", help="Only this task id.")
+    p_task_rounds.add_argument(
+        "--path", default="",
+        help="Only rounds whose feedback or decisions name this file path.",
+    )
+    p_task_rounds.add_argument(
+        "--json", action="store_true", help="Accepted for callers; JSON is the only output."
+    )
     p_task_run = task_sub.add_parser(
         "record-run",
         help=(

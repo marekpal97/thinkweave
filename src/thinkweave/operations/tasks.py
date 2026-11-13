@@ -14,6 +14,9 @@ The routes are a child dispatch (:func:`open_child` / :func:`close_child`,
 from the subagent hooks or ``weave task open|close``), the wrap declaration
 (:func:`apply_declaration`) and a devloop run (:func:`record_run`). The
 register's boundaries are ground truth; a transcript never places one.
+
+One reader crosses tasks: :class:`RoundLog` lists every task's rounds with
+the events of the session chains they name (``weave task rounds``).
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import re
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -36,7 +39,7 @@ from thinkweave.core.config import tracker_project
 from thinkweave.core.events import extract_deterministic, feedback_events, iter_jsonl
 from thinkweave.core.harness import lookup
 from thinkweave.core.harness import active as active_harness
-from thinkweave.core.schemas import NoteType
+from thinkweave.core.schemas import NoteMeta, NoteType
 from thinkweave.core.task_contract import (
     TASK_ID_RE,
     TASK_KIND,
@@ -733,6 +736,52 @@ class LedgerEntry:
 
 
 @dataclass(frozen=True)
+class RoundReading:
+    """One round as a diagnosis reads it: what the task note records, joined
+    to the events and served ids of the session chain its ref names.
+    ``gaps`` names each join that found nothing to read."""
+
+    route: str
+    session_ref: dict | None
+    date: str
+    asked: str
+    manifest: dict | None
+    feedback: list[dict]
+    skills: list[dict]
+    nudges: list[dict]
+    tool_errors: int
+    outcomes: dict
+    served: list[str]
+    decisions: list[dict]
+    gaps: list[str]
+
+    def names(self, path: str) -> bool:
+        """Whether a decision's ``file_paths`` or a feedback entry's words
+        name ``path``."""
+        wanted = PurePosixPath(path).parts
+        return any(
+            _same_file(wanted, PurePosixPath(p).parts)
+            for decision in self.decisions for p in decision["file_paths"]
+        ) or any(path in f"{f['about']} {f['text']}" for f in self.feedback)
+
+
+@dataclass(frozen=True)
+class TaskRounds:
+    """One task's group in ``weave task rounds``: the task and the rounds
+    the read kept."""
+
+    task_id: str
+    title: str
+    status: str
+    grain: str
+    parent: str
+    rounds: tuple[RoundReading, ...]
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if k != "task_id"}
+
+
+@dataclass(frozen=True)
 class EntryLanding:
     """Where one declared entry landed: its task, the ref it declared, and
     how it matched — ``continuing``, ``ref``, ``epic`` or ``mint``."""
@@ -958,6 +1007,13 @@ def apply_declaration(
 _FEEDBACK_KEYS = ("register", "prompt_ref", "ts", "text")
 
 
+def _stream_rows(streams: list[Path]) -> list[dict]:
+    """Every row of ``streams``, each once: a per-turn Stop mirrors the live
+    buffer into the archive and keeps the buffer, so one row can sit in two
+    streams."""
+    return _unique_dicts(row for stream in streams for row in iter_jsonl(stream))
+
+
 def _unique_dicts(items) -> list[dict]:
     """``items`` in order, each distinct dict once (JSON identity)."""
     out: list[dict] = []
@@ -1023,23 +1079,16 @@ class _DeclarationPass:
         # ran under, as its hook recorded them. The chain's earliest record
         # wins, so a resumed session names the commit and policy it began
         # from; "" / None when no stream records one.
-        bases: list[tuple[str, str]] = []
-        stamps: list[tuple[str, dict]] = []
-        rows: list[dict] = []
-        seen_rows: set[str] = set()
-        for stream in streams:
-            for row in iter_jsonl(stream):
-                # A per-turn Stop mirrors the live buffer into the archive
-                # and keeps the buffer, so one row can sit in both streams.
-                key = json.dumps(row, sort_keys=True, default=str)
-                if key in seen_rows:
-                    continue
-                seen_rows.add(key)
-                rows.append(row)
-                if row.get("type") == "base" and row.get("hash"):
-                    bases.append((str(row.get("ts", "")), str(row["hash"])))
-                elif row.get("type") == "manifest" and isinstance(row.get("manifest"), dict):
-                    stamps.append((str(row.get("ts", "")), row["manifest"]))
+        rows = _stream_rows(streams)
+        bases = [
+            (str(row.get("ts", "")), str(row["hash"]))
+            for row in rows if row.get("type") == "base" and row.get("hash")
+        ]
+        stamps = [
+            (str(row.get("ts", "")), row["manifest"])
+            for row in rows
+            if row.get("type") == "manifest" and isinstance(row.get("manifest"), dict)
+        ]
         self.base = min(bases)[1] if bases else ""
         self.manifest = min(stamps, key=lambda s: s[0])[1] if stamps else None
         # What the session did under that manifest (skill invocations,
@@ -1320,6 +1369,206 @@ def record_run(
     if minting and session_key:
         Register(cfg, session_key).open(task)
     return RunLanded(task.id, tuple(warnings))
+
+
+# ---------------------------------------------------------------------------
+# The read
+
+
+class RoundLog:
+    """Every task's rounds as a diagnosis reads them, from the index: each
+    task note's rounds, joined to the events and served ids of the session
+    chain a round's ref names. It collects and counts; it judges nothing."""
+
+    def __init__(self, cfg) -> None:
+        # Imported here: the hooks load this module on every event and
+        # never read the index through it.
+        from thinkweave.core.indexer import Indexer
+        from thinkweave.operations import rlvr_export
+
+        self.cfg = cfg
+        self.idx = Indexer(config=cfg)
+        self.chains = rlvr_export
+
+    def read(self, *, since: str = "", task_id: str = "", path: str = "") -> list[TaskRounds]:
+        """Tasks with their rounds, oldest task first: rounds dated inside
+        ``since`` (``<n>d`` or an ISO date), of ``task_id`` alone when given,
+        and only those whose feedback or decisions name ``path`` when given.
+        A per-dispatch task is listed only when ``task_id`` names it; its
+        tool errors count on the round of the session that dispatched it.
+        A round is dated by the note its ref names, else by its task; a task
+        with no round left is left out. An unreadable window or a task note
+        outside the contract raises ``ValueError``."""
+        start = _window_start(since)
+        try:
+            found = []
+            for note in self._notes("id LIKE ? ORDER BY date, id", task_id or "tsk-%"):
+                task = Task(note.frontmatter)
+                if task.grain == "per-dispatch" and not task_id:
+                    continue
+                kept = []
+                for entry in task.rounds:
+                    named = self._named(entry.session_ref)
+                    date = (named or note).date
+                    if date < start:
+                        continue
+                    reading = self._reading(entry, named, date)
+                    if not path or reading.names(path):
+                        kept.append(reading)
+                if kept:
+                    found.append(TaskRounds(
+                        task.id, task.title, str(task.frontmatter.get("status", "")),
+                        task.grain, str(task.frontmatter.get("parent") or ""), tuple(kept),
+                    ))
+            return found
+        finally:
+            self.idx.close()
+
+    def _reading(self, entry: Round, named: NoteMeta | None, date: str) -> RoundReading:
+        gaps: list[str] = []
+        ref = entry.session_ref
+        rows: list[dict] = []
+        served = list(entry.served or [])
+        tool_errors = entry.tool_errors or 0
+        judged: list = []
+        if ref and ref.kind != "agent_id" and named is None:
+            gaps.append(f"session {ref.value} is not in the index")
+        elif named and named.type == NoteType.SESSION:
+            rows = self._chain_rows(named.id, gaps)
+            served += sorted({r["note_id"] for r in self.chains.served_rows(self.idx, named.id)})
+            tool_errors += self._dispatch_errors(rows)
+        elif named:
+            judged = as_list(named.frontmatter.get("prediction_history"))
+        about = {
+            (r.get("ts"), r.get("prompt_ref")): str(r.get("about", ""))
+            for r in rows if r.get("type") == "feedback"
+        }
+        return RoundReading(
+            route=entry.route or "",
+            session_ref=ref.to_dict() if ref else None,
+            date=date,
+            asked=entry.asked or "",
+            manifest=entry.manifest,
+            feedback=[
+                {
+                    "register": f.get("register", ""),
+                    "about": about.get((f.get("ts"), f.get("prompt_ref")), ""),
+                    "text": f.get("text", ""),
+                    "prompt_ref": f.get("prompt_ref", ""),
+                    "ts": f.get("ts", ""),
+                }
+                for f in entry.feedback or []
+            ],
+            skills=list(entry.skills or []) + [
+                {k: r.get(k, "") for k in ("skill", "declared", "ts")}
+                for r in rows if r.get("tool") == "Skill"
+            ],
+            nudges=[
+                {k: r.get(k, "") for k in ("kind", "phrase", "ts")}
+                for r in rows if r.get("type") == "nudge"
+            ],
+            tool_errors=tool_errors,
+            outcomes={
+                key: value
+                for key, value in (
+                    ("done", entry.done),
+                    ("attempts", (entry.did or {}).get("attempts")),
+                    ("envelopes", [
+                        {k: e[k] for k in ("role", "outcome", "error") if e.get(k)}
+                        for e in entry.envelopes or []
+                    ]),
+                    ("reviews", entry.reviews),
+                    ("criteria", entry.criteria),
+                    ("judged", judged),
+                )
+                if value not in (None, [])
+            },
+            served=served,
+            decisions=self._decisions(entry.decisions or {}, gaps),
+            gaps=gaps,
+        )
+
+    def _notes(self, where: str, value: str) -> list[NoteMeta]:
+        return [
+            NoteMeta(
+                id=row["id"], type=NoteType(row["type"]), title=row["title"],
+                path=row["path"], date=row["date"] or "",
+                frontmatter=json.loads(row["frontmatter"] or "{}"),
+            )
+            for row in self.idx.db.execute(
+                f"SELECT id, type, title, path, date, frontmatter FROM notes WHERE {where}",
+                (value,),
+            )
+        ]
+
+    def _note(self, where: str, value: str) -> NoteMeta | None:
+        return next(iter(self._notes(f"{where} LIMIT 1", value)), None)
+
+    def _named(self, ref: SessionRef | None) -> NoteMeta | None:
+        """The indexed note a round's ref names: a session or trajectory
+        note by id, or the session note a harness session key was filed as."""
+        if ref is None or ref.kind == "agent_id":
+            return None
+        if ref.kind == "note":
+            return self._note("id = ?", ref.value)
+        return self._note(
+            "type = 'session' AND frontmatter LIKE ?", f'%"source_session": "{ref.value}"%'
+        )
+
+    def _chain_rows(self, session_id: str, gaps: list[str]) -> list[dict]:
+        """The event rows of every session in ``session_id``'s chain: each
+        one's archived events and its live buffer."""
+        streams: list[Path] = []
+        for member in sorted(self.chains.chain_session_ids(self.idx, session_id)):
+            note = self._note("id = ?", member)
+            if note is None:
+                continue
+            streams.append(archived_events_path((self.cfg.vault_root / note.path).parent))
+            if source := note.frontmatter.get("source_session"):
+                streams.append(buffer_path(self.cfg.weave_dir, str(source)))
+        streams = [s for s in streams if s.exists()]
+        if not streams:
+            gaps.append(f"session {session_id} has no event stream")
+        return _stream_rows(streams)
+
+    def _dispatch_errors(self, rows: list[dict]) -> int:
+        """Tool errors across the per-dispatch tasks these rows opened."""
+        opened = {
+            str(r.get("task_id")) for r in rows
+            if r.get("type") == TASK_OPEN and r.get("grain") == "per-dispatch"
+        }
+        return sum(
+            int(entry.get("tool_errors") or 0)
+            for task_id in sorted(opened)
+            if (note := self._note("id = ?", task_id))
+            for entry in note.frontmatter.get("rounds") or []
+        )
+
+    def _decisions(self, declared: dict, gaps: list[str]) -> list[dict]:
+        found = []
+        for dec_id in dict.fromkeys(i for ids in declared.values() for i in ids):
+            note = self._note("id = ?", dec_id)
+            if note is None:
+                gaps.append(f"decision {dec_id} is not in the index")
+                continue
+            fm = note.frontmatter
+            found.append({
+                "id": dec_id,
+                "status": str(fm.get("status", "")),
+                "file_paths": as_list(fm.get("file_paths")),
+                "applied": fm.get("applied"),
+            })
+        return found
+
+
+def _window_start(since: str) -> str:
+    """The ISO instant a ``since`` window opens at: ``<n>d`` is n days back
+    from now, an ISO date is itself, ``""`` is unbounded."""
+    if days := re.fullmatch(r"(\d+)d", since):
+        return (datetime.now(timezone.utc) - timedelta(days=int(days[1]))).isoformat()
+    if since:
+        datetime.fromisoformat(since)
+    return since
 
 
 # ---------------------------------------------------------------------------

@@ -171,7 +171,7 @@ def _read_startup_token_est(log_path: Path) -> int:
     return 0
 
 
-def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
+def chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
     """The session plus every session note sharing its ``logical_session``.
 
     #175 chain union: a compaction-segment chain is one logical
@@ -219,9 +219,9 @@ def _chain_session_ids(idx: Indexer, session_id: str) -> set[str]:
 
 def served_rows(idx: Indexer, session_id: str) -> list[sqlite3.Row]:
     """Every ``context_served`` row for the logical session ``session_id``
-    belongs to — the chain union of :func:`_chain_session_ids` joined onto
+    belongs to — the chain union of :func:`chain_session_ids` joined onto
     the projection. Rows carry ``note_id``, ``source`` and ``ts``."""
-    session_ids = sorted(_chain_session_ids(idx, session_id))
+    session_ids = sorted(chain_session_ids(idx, session_id))
     placeholders = ",".join("?" * len(session_ids))
     return idx.db.execute(
         f"SELECT note_id, source, ts FROM context_served "
