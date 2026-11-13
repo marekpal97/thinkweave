@@ -254,13 +254,17 @@ def _path_history(cfg, dec_id: str, file_paths: list[str]) -> list[PathHistoryEn
     verdicts."""
     from thinkweave.operations import decisions
 
-    return [
-        PathHistoryEntry(
-            decision_id=r.id,
-            date=r.date,
-            status=r.frontmatter.get("status", ""),
-            prediction_history=r.frontmatter.get("prediction_history") or [],
+    history: list[PathHistoryEntry] = []
+    for r in decisions.list_by_file(cfg, file_paths):
+        if r.id == dec_id:
+            continue
+        fm = r.frontmatter
+        history.append(
+            PathHistoryEntry(
+                decision_id=r.id,
+                date=r.date,
+                status=fm.get("status", ""),
+                prediction_history=fm.get("prediction_history") or [],
+            )
         )
-        for r in decisions.list_by_file(cfg, file_paths)
-        if r.id != dec_id
-    ]
+    return history

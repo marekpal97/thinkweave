@@ -26,7 +26,21 @@ class SearchResult:
     tags: list[str]
     snippet: str = ""
     rank: float = 0.0
-    frontmatter: dict = field(default_factory=dict)
+    frontmatter_json: str = ""
+
+    @property
+    def frontmatter(self) -> dict:
+        """The note's indexed frontmatter, for the lookups that carry it.
+        Raises ``ValueError`` naming the note when the row does not decode."""
+        if not self.frontmatter_json:
+            return {}
+        try:
+            return json.loads(self.frontmatter_json)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"the index row for {self.id} holds unreadable frontmatter "
+                f"({e}); rebuild the index"
+            ) from e
 
 
 @dataclass
@@ -969,28 +983,20 @@ class Search:
 
         results = []
         for row in self.db.execute(sql, params):
-            tags_list = json.loads(row["tags"]) if row["tags"] else []
-            try:
-                fm = json.loads(row["frontmatter"]) if row["frontmatter"] else {}
-            except json.JSONDecodeError:
-                fm = {}
-
-            # Filter by status if requested — cheap post-filter on small result sets.
-            if status and fm.get("status") != status:
-                continue
-
-            results.append(
-                SearchResult(
-                    id=row["id"],
-                    type=row["type"],
-                    title=row["title"],
-                    path=row["path"],
-                    project=row["project"] or "",
-                    date=row["date"] or "",
-                    tags=tags_list,
-                    frontmatter=fm,
-                )
+            result = SearchResult(
+                id=row["id"],
+                type=row["type"],
+                title=row["title"],
+                path=row["path"],
+                project=row["project"] or "",
+                date=row["date"] or "",
+                tags=json.loads(row["tags"]) if row["tags"] else [],
+                frontmatter_json=row["frontmatter"] or "",
             )
+            # Filter by status if requested — cheap post-filter on small result sets.
+            if status and result.frontmatter.get("status") != status:
+                continue
+            results.append(result)
         return results
 
     def similar(

@@ -481,6 +481,28 @@ class TestDecisionFiles:
         assert s.search_decisions_by_file([]) == []
         s.close()
 
+    def test_search_decisions_by_file_unreadable_frontmatter_is_loud(
+        self, vault: VaultManager, indexer: Indexer, config: Config
+    ):
+        """A row whose indexed frontmatter does not decode is still listed,
+        and reading its frontmatter (or filtering on it) raises by id."""
+        path = vault.create_note(
+            NoteType.DECISION, "Broken", body="R", project="p1",
+            extra_frontmatter={"file_paths": ["x.py"], "status": "rejected"},
+        )
+        dec_id = vault.read_note(path).id
+        indexer.rebuild(full=True)
+
+        s = Search(config=config)
+        s.db.execute("UPDATE notes SET frontmatter = '{not json' WHERE id = ?", (dec_id,))
+        (row,) = s.search_decisions_by_file("x.py")
+        assert row.id == dec_id
+        with pytest.raises(ValueError, match=dec_id):
+            row.frontmatter
+        with pytest.raises(ValueError, match=dec_id):
+            s.search_decisions_by_file("x.py", status="rejected")
+        s.close()
+
     def test_reindex_replaces_file_paths(
         self, vault: VaultManager, indexer: Indexer, config: Config
     ):
