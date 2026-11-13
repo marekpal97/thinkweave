@@ -43,6 +43,7 @@ from thinkweave.core.decision_provider import (
     Question,
     build_from_vault,
 )
+from thinkweave.core.schemas import NoteMeta
 from thinkweave.synthesis.concepts import suggest_similar
 
 PHASES = ("ex_ante", "ex_post")
@@ -478,25 +479,23 @@ def backfill_citations(
     verdict, no miss. Does nothing while the ``citation`` question set is off.
     """
     from thinkweave.core.vault import VaultManager
-    from thinkweave.synthesis.hub import reflink
 
     result = CitationBackfill()
     policy = cfg.question_set(CITATION)
     if not policy.enabled:
         return result
     vault = VaultManager(config=cfg)
-    owed, paths = _uncited_decisions(cfg, vault)
-    texts = _note_texts(cfg, {nid for _decision, served in owed for nid in served})
-    for decision, served in owed:
-        slots = {"decision": f"{decision.title}\n\n{decision.body.strip()}"}
-        pools = [served[i:i + policy.pool_size] for i in range(0, len(served), policy.pool_size)]
+    owed = _uncited_decisions(cfg, vault)
+    texts = _note_texts(cfg, {nid for uncited in owed for nid in uncited.served})
+    for uncited in owed:
+        decision = uncited.note
         try:
             answered = [
                 ask_question_set(
-                    cfg, CITATION, slots, provider=provider,
+                    cfg, CITATION, uncited.slots(), provider=provider,
                     subjects={nid: {"candidate": texts[nid]} for nid in pool},
                 )
-                for pool in pools
+                for pool in uncited.pools(policy.pool_size)
             ]
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
@@ -516,12 +515,34 @@ def backfill_citations(
                 actions={nid: "cited" for nid in cited},
             )
         if cited:
-            links = ", ".join(reflink(nid, paths) for nid in cited)
-            vault.update_note(decision.path, body_append=f"cites: {links}")
+            vault.update_note(decision.path, body_append=uncited.cites_line(cited))
             result.written += 1
     if result.proposals and not dry_run:
         _rebuild(cfg)
     return result
+
+
+@dataclass(frozen=True)
+class UncitedDecision:
+    """A decision the backfill owes a call: its note, and the vault notes its
+    session was served, each id mapped to its vault path."""
+
+    note: NoteMeta
+    served: dict[str, str]
+
+    def slots(self) -> dict[str, str]:
+        return {"decision": f"{self.note.title}\n\n{self.note.body.strip()}"}
+
+    def pools(self, size: int) -> list[list[str]]:
+        """The served ids in calls of at most ``size`` candidates."""
+        ids = list(self.served)
+        return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+    def cites_line(self, cited: tuple[str, ...]) -> str:
+        """The body line that links ``cited`` by path."""
+        from thinkweave.synthesis.hub import reflink
+
+        return "cites: " + ", ".join(reflink(nid, self.served) for nid in cited)
 
 
 @dataclass(frozen=True)
@@ -916,10 +937,9 @@ def _note_texts(cfg: Config, ids: set[str]) -> dict[str, str]:
     }
 
 
-def _uncited_decisions(cfg: Config, vault) -> tuple[list[tuple], dict[str, str]]:
-    """Each decision the backfill still owes a call, with the ids of the
-    vault notes its session was served (the decision and its own session
-    left out), and the id-to-path map of the vault.
+def _uncited_decisions(cfg: Config, vault) -> list[UncitedDecision]:
+    """Each decision the backfill still owes a call, with the vault notes
+    its session was served (the decision and its own session left out).
 
     A decision is owed when the vault log holds no ``citation`` verdict for
     it, its body cites no note id, and its session served at least one note.
@@ -951,12 +971,12 @@ def _uncited_decisions(cfg: Config, vault) -> tuple[list[tuple], dict[str, str]]
             })
             if not served:
                 continue
-            decision = vault.read_note(vault.root / row["path"])
-            if not extract_cited_ids(decision.body):
-                owed.append((decision, served))
+            note = vault.read_note(vault.root / row["path"])
+            if not extract_cited_ids(note.body):
+                owed.append(UncitedDecision(note, {nid: paths[nid] for nid in served}))
     finally:
         idx.close()
-    return owed, paths
+    return owed
 
 
 def _rebuild(cfg: Config) -> None:
