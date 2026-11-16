@@ -5,6 +5,136 @@ Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-16
+
+Two headlines. **Self-improvement rail:** the values and texts a person
+tunes live in one policy repo (`rsi-rail`), which thinkweave reads through
+seams. Every task round records which revision of that repo was in force.
+Two personal skills, `/tweak` and `/debrief`, turn a correction into one
+decision plus one commit in the repo that owns the text. **System 1
+decisions:** a decision provider answers small typed questions with
+probabilities. It gates prompt-time retrieval, judges after the fact which
+served notes the work relied on, and judges duplicates in acquisition and
+in the ontology gate. Every call lands in a `verdicts` ledger.
+
+Both are early versions. Without an rsi-rail repo, and with every question
+set off (the default), thinkweave behaves as in 0.3.1 except where
+"Changed" says otherwise.
+
+### Upgrade notes
+
+- Run `weave doctor --migrate` once. It backfills `source_session` on
+  decisions and the full feedback text on task rounds. The task-ledger
+  step now rewrites only notes that are out of shape, so the run takes
+  minutes, not hours.
+- Dev-link machines: run `uv run weave dev-link` once after pulling (it is
+  idempotent) and restart Claude Code. Hand-written cron lines that call a
+  bare skill (`-p "/dream"`) must become `-p "/thinkweave:dream"`; the
+  `weave schedule` block already renders the namespaced form.
+- Settings-file hook route: rerun `weave hooks install`. It adds the
+  `Skill` matcher on PostToolUse and the `PreCompact` event. The plugin
+  route needs nothing.
+- The OpenAI path for news triage is removed. `/drain` now calls
+  `weave decide triage`. With the `news_triage` question set off, every
+  item goes to the `news-triage-worker` subagent, so no key is needed.
+- To use the rail, set the user-scope `rsi_rail` key or
+  `THINKWEAVE_RSI_RAIL` to the repo's path, then run `weave hooks install`
+  to link its skills and rules into each harness. `weave doctor --mcp`
+  reports dangling links and hook drift.
+- To use System 1, add a backend under `decisions.backends` in `api.yaml`
+  and enable a question set under `[verdicts.<question_set>]` in the
+  rail's `thinkweave/config.toml`. `weave decide smoke` makes one
+  end-to-end call.
+
+### Added
+
+- **Config seam to the policy repo** (#359, PR #362): `load_config` merges
+  `<rsi-rail>/thinkweave/config.toml` over the vault's `config.toml`. Only
+  keys read on the serving chain are accepted; any other key is refused by
+  name. Knowledge files (`sources.yaml`, `PRIORITIES.yaml`, `api.yaml`,
+  the ontology) stay in the vault.
+- **Round manifest** (#344, PRs #362, #378, #408): every task round
+  records the rsi-rail commit and dirty flag, the harness, the reader
+  versions, the project repo's commit, and the hook and question-set
+  values in force. The event buffer gains rows for `Skill` calls,
+  prompt-declared skills (Codex, Pi, OpenCode), subagent start and stop,
+  and nudges.
+- **Install from the policy repo** (#360, PRs #362, #367, #386):
+  `weave hooks install` links the repo's skills, rules file, agents and
+  output styles into every harness profile, and renders the repo's
+  `hooks/hooks.toml` (enabled events, matchers, foreign hook scripts) per
+  profile. `weave doctor --mcp` gains the `rsi-rail links` and
+  `rsi-rail hooks` rows.
+- **`weave policy inventory`** (PR #385): lists every Config knob with its
+  default, its TOML address and the events that read it, as `--toml`,
+  `--md` or `--json`. The rail's allowlist derives from the same
+  declaration, so no hand-kept list exists.
+- **Addressable SessionStart payload** (#352, PR #385): `[context.startup]`
+  and `[context.startup.<section>]` set the section list, the drop order,
+  per-section caps and the payload budget. One plan feeds the SessionStart
+  hook, `weave_project_snapshot` and `weave project`.
+- **`[hooks]` knobs and the Stop nudge** (#345, PRs #387, #393): per-event
+  budgets, the inline context cap and `hooks.stop.unverified_claim_nudge`.
+  The nudge (off by default) blocks a Stop whose last message claims a
+  verification when no test command ran in that turn.
+- **Serving-chain record** (#353, PR #387): the startup row carries
+  `bytes`, the prompt-time rows carry `bytes` and `cap`, and `PreCompact`
+  is a canonical event that writes a `compact` row on Claude Code.
+- **`weave task feedback` and `weave task rounds`** (PRs #362, #377,
+  #392): the first pins a correction or confirmation to a prompt
+  mid-session, including prompts from earlier turns. The second reads
+  rounds across tasks with their manifest, feedback, skills, nudges, tool
+  errors and decisions, and names every join that found nothing.
+- **Decision provider and the `verdicts` ledger** (#379, PR #389):
+  `core/decision_provider.py` exposes `decide(state, questions)` with
+  `noul` and `choice` answers. Each call is a `verdict` event that the
+  indexer projects into the `verdicts` table. The rail can override a
+  question set's text in `thinkweave/questions/<question_set>.toml`.
+- **Prompt-time gate** (#380, PR #389): `prompt_gate` scores a pool of 30
+  candidates (BM25 and similarity, fused by RRF) and serves those at or
+  above 0.7. On an error, a 429 or a missed deadline it serves the ungated
+  top of the pool and writes a `verdict_miss`.
+- **Ex-post judge** (#381, PR #389): `wrap-finalize` asks, per closed
+  turn, whether the work relied on each served note.
+  `weave decide sweep` covers sessions no wrap judged, and
+  `weave decide readout` reports calls, misses, latency, cost and
+  calibration per question set.
+- **Duplicate judgment** (#382, PR #394): `acquisition_dedup` drops a
+  queued item judged a duplicate of an existing source. `concept_guard`
+  rewrites a confident synonym to its canonical concept at `weave_create`,
+  `weave_update` and extraction, and attaches a hint to a likely one.
+- **Batch question sets** (#383, PR #394): `weave decide
+  backfill-citations` appends a `cites:` line to decisions that cite no
+  note. `weave decide triage` decides news items and sends only the
+  uncertain band to the Haiku worker.
+- **Replayable rounds** (#297, #324, #325, PRs #328, #349, #350): a round
+  keeps its full feedback text and its base commit, on all three routes.
+  `weave doctor --migrate` backfills both the feedback text and decision
+  `source_session` for existing notes.
+- **Citations at wrap** (#224, PR #347): `wrap-finalize` warns on each new
+  decision whose body cites no note id, and offers the notes served to
+  that session as ready `[[path|id]]` links.
+- **Judge inputs** (PR #393): `weave judge` worklist items carry `applied`
+  and the history of decisions on the same paths.
+
+### Changed
+
+- **SessionStart payload fits the harness cap** (#317, PR #333): each
+  profile declares its inline context cap. The cue sections lead and are
+  capped, not dropped whole. The tools manifest and the STATE excerpt
+  leave the payload; `weave_project_snapshot` still serves them.
+- **A declared `done` needs committed files** (#316, PR #326): the wrap
+  task pass closes a task only when every file it recorded is committed.
+  Otherwise the round lands, the task stays open, and the report names the
+  files.
+- Stop writes a `turn_end` event on every harness, and the Pi and OpenCode
+  `UserPromptSubmit` budget rises from 2.5 s to 6 s (PR #389).
+- **devloop texts and settings move to the policy repo** (#346, #395,
+  PRs #378, #384, #408): the loop's pack texts and the person's
+  `loop.toml` settings live in the rail's `devloop/`. `docs/agents/loop.toml`
+  keeps repo facts only. The `ship` text (PR body, findings comment,
+  report) is served by `devloop text ship` and can be overridden there.
+
 ### Fixed
 
 - **One route per machine** (#254): on a dev machine with `weave dev-link`,
@@ -24,12 +154,27 @@ Notable changes to ThinkWeave. Versioning is SemVer on a 0.x contract: the
   `mcp__plugin_thinkweave_thinkweave__weave_*`, so on a plugin-only install
   the dream and research workers launched without any `weave_*` tool.
 
-### Upgrade notes
+- Prompt-time retrieval stays inside the budget the harness really waits
+  (#329, PR #330). On Pi the shim killed the hook at 2.5 s, below the 4 s
+  embedding deadline, so the miss was never recorded.
+- A decision is stamped with the session note's own `ses-` id as
+  `source_session`, not the harness uuid (#223, PR #331).
+- Every hook and MCP launch runs the interpreter with `-P`, so a module in
+  the project folder cannot shadow a stdlib module (#307, PR #332).
+- Hook-side index writes retry on `database is locked`, and a nested list
+  inside `proposed_concepts` no longer stops the indexer (#280, PR #327).
+- `weave doctor --migrate` ran for over an hour on a large vault, because
+  the task-ledger step saved and reindexed every task note (PR #348).
+- A mid-session `/wrap` kept the round's manifest but lost its `Skill` and
+  nudge counts. Rail hooks that fail now say so in `hooks.log` (PR #377).
+- A failed or slow `git status` raises when the manifest is built. It
+  never reads as a clean repo (PR #408).
 
-- Dev-link machines: run `uv run weave dev-link` once after pulling (it is
-  idempotent) and restart Claude Code. Hand-written cron lines that call a
-  bare skill (`-p "/dream"`) must become `-p "/thinkweave:dream"`; the
-  `weave schedule` block already renders the namespaced form.
+### Internal
+
+- The devloop pin moved four times, to the funloops commit that carries
+  `devloop text` (funloops #114 to #117). The boundary tests in
+  `tests/test_devloop_boundaries.py` stay green at each pin.
 
 ## [0.3.1] — 2026-10-12
 
