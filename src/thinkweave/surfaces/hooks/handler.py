@@ -802,7 +802,7 @@ def _record_base(cfg, session_id: str, now: str, cwd: str, *, model: str = "") -
     if marker.exists():
         return
     stamp = manifest.collect(
-        cfg, _harness_id(), model=model or session_model(cfg.weave_dir, session_id)
+        cfg, _harness_id(), model=model or session_model(cfg.weave_dir, session_id), cwd=cwd,
     )
     state.mkdir(parents=True, exist_ok=True)
     if not _claim_once(marker):

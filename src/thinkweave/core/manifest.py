@@ -4,8 +4,10 @@
 (``task_contract._ROUND_CHECKERS``): the rsi-rail repo's commit and dirty
 flag when a repo is configured, the harness that ran the stint, and the
 reader versions — the thinkweave source commit (or its package version),
-the funloops commit the installed ``devloop`` was pinned to, and the plugin
-versions a dev-link exposes to each harness.
+the funloops commit the installed ``devloop`` was pinned to, the plugin
+versions a dev-link exposes to each harness, and the git repo the stint ran
+in (``project``: its root, commit and dirty flag), whose committed texts the
+agent read beside the rail's.
 
 The harness readout (dec-4f158b58) rides along: the handful of settings
 values that change how the agent behaves (``harness_settings``), the hook
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
@@ -42,13 +45,14 @@ _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 HARNESS_SETTINGS_KEYS = ("model", "effortLevel", "outputStyle", "tui")
 
 
-def collect(cfg, harness: str, *, model: str = "") -> dict:
+def collect(cfg, harness: str, *, model: str = "", cwd: str = "") -> dict:
     """The manifest for a stint starting now, under ``harness``. ``model``
     is the one the harness reported running (a hook input's ``model``); it
-    wins over the settings file's. A configured rsi-rail that is not a
+    wins over the settings file's. ``cwd`` is the directory the stint works
+    in, the process's own when empty. A configured rsi-rail that is not a
     committed git repo raises ``RuntimeError``: a round cannot name a
     policy that does not exist."""
-    manifest = {"harness": harness, "readers": _readers()}
+    manifest = {"harness": harness, "readers": _readers(cwd)}
     if cfg.rsi_rail:
         manifest["rsi_rail"] = _rail(Path(cfg.rsi_rail))
     profile = _profile(harness)
@@ -145,18 +149,41 @@ def _effective(cfg, profile: HarnessProfile) -> dict:
 
 
 def _rail(repo: Path) -> dict:
-    commit = git_stdout("rev-parse", "HEAD", cwd=str(repo))
-    if not _FULL_SHA_RE.fullmatch(commit):
+    state = _repo_state(str(repo))
+    if state is None:
         raise RuntimeError(
             f"rsi-rail at {repo} is not a git repository with a commit; "
             "the round cannot record which policy it ran under"
         )
-    dirty = bool(git_stdout("status", "--porcelain", cwd=str(repo)))
-    return {"repo": str(repo), "commit": commit, "dirty": dirty}
+    return {**state, "repo": str(repo)}
 
 
-def _readers() -> dict:
-    readers = {"thinkweave": _source_commit(thinkweave.__file__) or thinkweave.__version__}
+def _repo_state(directory: str) -> dict | None:
+    """``{repo, commit, dirty}`` of the git repo holding ``directory``: its
+    root, HEAD, and whether anything is uncommitted. ``None`` outside a repo
+    with a commit. A ``git status`` that fails or times out raises
+    ``RuntimeError``: an unread working tree is never recorded as clean."""
+    repo = git_stdout("rev-parse", "--show-toplevel", cwd=directory)
+    commit = git_stdout("rev-parse", "HEAD", cwd=directory)
+    if not repo or not _FULL_SHA_RE.fullmatch(commit):
+        return None
+    try:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], capture_output=True, text=True,
+            timeout=5, check=True, cwd=directory or None,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"git status failed in {repo}; the round cannot record whether "
+            "it ran on uncommitted text"
+        ) from exc
+    return {"repo": repo, "commit": commit, "dirty": bool(status.strip())}
+
+
+def _readers(cwd: str = "") -> dict:
+    readers: dict = {
+        "thinkweave": _source_commit(thinkweave.__file__) or thinkweave.__version__
+    }
     if funloops := _pinned("devloop"):
         readers["funloops"] = funloops
     plugins = {
@@ -164,6 +191,8 @@ def _readers() -> dict:
     }
     if plugins:
         readers["plugins"] = plugins
+    if project := _repo_state(cwd):
+        readers["project"] = project
     return readers
 
 

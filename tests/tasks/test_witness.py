@@ -91,6 +91,41 @@ class TestCollect:
         (rail / "loose.md").write_text("untracked", encoding="utf-8")
         assert manifest.collect(cfg, "pi")["rsi_rail"]["dirty"] is True
 
+    def test_the_readers_name_the_project_repo_its_commit_and_dirt(self, tmp_path: Path):
+        project = init_repo(tmp_path / "project")
+        commit_file(project, "CLAUDE", "the project's rules")
+        head = run_git("rev-parse", "HEAD", cwd=project)
+        cfg = Config(vault_root=tmp_path / "vault")
+
+        clean = manifest.collect(cfg, "pi", cwd=str(project))
+        assert clean["readers"]["project"] == {
+            "repo": str(project), "commit": head, "dirty": False,
+        }
+        assert validate_task_note(_work_note(Round.from_dict({"manifest": clean}, grain="work"))) == []
+
+        (project / "CLAUDE.txt").write_text("edited, not committed\n", encoding="utf-8")
+        assert manifest.collect(cfg, "pi", cwd=str(project))["readers"]["project"] == {
+            "repo": str(project), "commit": head, "dirty": True,
+        }
+
+    def test_a_failed_git_status_is_announced_never_read_as_clean(self, tmp_path: Path):
+        project = init_repo(tmp_path / "project")
+        (project / "a.txt").write_text("edited, not committed\n", encoding="utf-8")
+        (project / ".git" / "index").write_bytes(b"not an index")
+        cfg = Config(vault_root=tmp_path / "vault")
+
+        with pytest.raises(RuntimeError, match="git status"):
+            manifest.collect(cfg, "pi", cwd=str(project))
+        with pytest.raises(RuntimeError, match="git status"):
+            manifest.collect(Config(vault_root=tmp_path / "vault", rsi_rail=project), "pi",
+                             cwd=str(tmp_path))
+
+    def test_outside_a_repo_the_readers_name_no_project(self, tmp_path: Path, monkeypatch):
+        cfg = Config(vault_root=tmp_path / "vault")
+        assert "project" not in manifest.collect(cfg, "pi", cwd=str(tmp_path))["readers"]
+        monkeypatch.chdir(init_repo(tmp_path / "here"))
+        assert manifest.collect(cfg, "pi")["readers"]["project"]["repo"] == str(tmp_path / "here")
+
     def test_no_rail_configured_means_no_rail_entry(self, tmp_path: Path):
         found = manifest.collect(Config(vault_root=tmp_path / "vault"), "claude-code")
         assert "rsi_rail" not in found

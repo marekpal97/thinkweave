@@ -86,6 +86,7 @@ Any *other* diff is what this test exists to catch.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tomllib
@@ -105,9 +106,9 @@ LOOP_TOML = REPO_ROOT / "docs" / "agents" / "loop.toml"
 
 # The full subcommand surface, pinned by enumeration so a silently dropped
 # verb fails rather than shrinks. `board` and `pack` arrived with the devloop
-# revisit (funloops #9, #28).
+# revisit (funloops #9, #28); `text` with the text seam.
 SUBCOMMANDS = ["plan", "claim", "release", "config", "check", "validate",
-               "prime", "triage", "trajectory", "board", "pack"]
+               "prime", "triage", "trajectory", "board", "pack", "text"]
 
 # ---------------------------------------------------------------------------
 # 1. Schema pin — devloop's SQL against an index built by the real indexer
@@ -264,6 +265,20 @@ def test_python_m_devloop_reaches_the_same_rail():
     via_module, _ = _resolved_config([sys.executable, "-m", "devloop", "config"])
     via_shim, _ = _resolved_config([sys.executable, str(SHIM), "config"])
     assert via_module == via_shim == json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+
+def test_the_shim_serves_the_ship_text_from_the_policy_directory(tmp_path):
+    """The text seam through the shim: a ``ship.md`` in the policy directory
+    replaces the packaged text, which an empty directory leaves in force."""
+    def ship(policy: Path) -> str:
+        return subprocess.run(
+            [sys.executable, str(SHIM), "text", "ship"], cwd=REPO_ROOT, check=True,
+            capture_output=True, text=True, env={**os.environ, "DEVLOOP_POLICY_DIR": str(policy)},
+        ).stdout
+
+    assert "Closes #" in ship(tmp_path)
+    (tmp_path / "ship.md").write_text("MARKER shape\n", encoding="utf-8")
+    assert ship(tmp_path) == "MARKER shape\n"
 
 
 # ---------------------------------------------------------------------------
